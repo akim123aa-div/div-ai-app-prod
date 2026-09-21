@@ -1,0 +1,43 @@
+# The two stateful services, and nothing else.
+#
+# Lessons 1 to 5 run the application on your host and these in containers.
+# Lesson 6 opens this file line by line and then adds `api` and `ui` to it.
+# Until then it is infrastructure you use without having written it.
+#
+#   docker compose up -d postgres qdrant
+#
+# Host ports come from .env so that a machine already running a Postgres on 5432
+# does not have to argue with this file. Nothing else in here reads .env: the
+# values below are the container's own, and the application's copy of them lives
+# in .env as well. Lesson 6 is where that duplication gets removed.
+
+name: m9-infra
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: docchat
+      POSTGRES_PASSWORD: docchat
+      POSTGRES_DB: docchat
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"   # host:container. The app is on the host, so it needs a host port.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docchat"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"     # HTTP API, and a dashboard at /dashboard
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrantdata:/qdrant/storage
+
+volumes:
+  pgdata:
+  qdrantdata:

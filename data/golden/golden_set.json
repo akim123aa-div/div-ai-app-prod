@@ -1,0 +1,563 @@
+{
+ "made_by": "Lesson 17, assembled from the Lesson 14/16 evaluation sets and a public golden set",
+ "grading": "An answer counts as correct when any string in `accept` appears in it after lowercasing and removing commas. Retrieval is graded at page level: a retrieved chunk is correct when its doc matches `doc` and its page is in `pages`.",
+ "layout": {
+  "total": 40,
+  "answerable": 27,
+  "unanswerable": 13,
+  "supplied": 30,
+  "worked_example": 10
+ },
+ "questions": [
+  {
+   "id": 1,
+   "q": "For Albany International, what was the year-end patent portfolio in aerospace technologies?",
+   "doc": "albany",
+   "pages": [
+    16
+   ],
+   "answer": "2300",
+   "accept": [
+    "2300"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 2,
+   "q": "How many patents did Aurora Innovation hold at year end?",
+   "doc": "aurora",
+   "pages": [
+    9,
+    14
+   ],
+   "answer": "1300",
+   "accept": [
+    "1300"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 3,
+   "q": "What was the non-performing loan ratio for FNCB Bancorp at year end?",
+   "doc": "fncb",
+   "pages": [
+    2,
+    4,
+    21,
+    52
+   ],
+   "answer": "0.25",
+   "accept": [
+    "0.25"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 4,
+   "q": "What was Albany International Corp.'s net cash provided by operating activities in 2022?",
+   "doc": "albany",
+   "pages": [
+    44
+   ],
+   "answer": "$128.2 million",
+   "accept": [
+    "128.2"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 5,
+   "q": "What was the amount paid in dividends by Albany International Corp. during 2022?",
+   "doc": "albany",
+   "pages": [
+    45
+   ],
+   "answer": "$26.5 million",
+   "accept": [
+    "26.5"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 6,
+   "q": "What was Albany International Corp.'s effective tax rate for 2022?",
+   "doc": "albany",
+   "pages": [
+    41
+   ],
+   "answer": "26.9%",
+   "accept": [
+    "26.9"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 7,
+   "q": "What was the amount of net cash used in investing activities for Armadale Capital Plc in 2022?",
+   "doc": "armadale",
+   "pages": [
+    28
+   ],
+   "answer": "\u00a31,118,000",
+   "accept": [
+    "1118000",
+    "1.118 million",
+    "1.1 million"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 8,
+   "q": "What is the name of the self-driving platform developed by Aurora Innovation, Inc.?",
+   "doc": "aurora",
+   "pages": [
+    53
+   ],
+   "answer": "Aurora Driver",
+   "accept": [
+    "aurora driver"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 9,
+   "q": "What was the amount of stock-based compensation recognized for related party RSUs by Aurora Innovation, Inc. for the year ended December 31, 2022?",
+   "doc": "aurora",
+   "pages": [
+    76
+   ],
+   "answer": "$6 million",
+   "accept": [
+    "6 million",
+    "6.0 million"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 10,
+   "q": "What was the valuation allowance at the end of the period for Aurora Innovation, Inc. as of December 31, 2022?",
+   "doc": "aurora",
+   "pages": [
+    81
+   ],
+   "answer": "$542 million",
+   "accept": [
+    "542"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 11,
+   "q": "What percentage of the ordinary share capital of Brave Bison Limited, Greenlight Digital Limited, and Greenlight Commerce Limited was transferred to Brave Bison 2021 Limited during the year?",
+   "doc": "brave-bison",
+   "pages": [
+    66
+   ],
+   "answer": "100%",
+   "accept": [
+    "100%",
+    "100 percent"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 12,
+   "q": "What was the revenue growth percentage for Brave Bison Group plc in 2022?",
+   "doc": "brave-bison",
+   "pages": [
+    6
+   ],
+   "answer": "46%",
+   "accept": [
+    "46%",
+    "46 percent"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 13,
+   "q": "What method does Brave Bison Group plc use to determine the fair value of equity instruments granted in share-based payment transactions?",
+   "doc": "brave-bison",
+   "pages": [
+    45
+   ],
+   "answer": "Black-Scholes method.",
+   "accept": [
+    "black-scholes",
+    "black scholes"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 14,
+   "q": "What was the number of shares outstanding for FNCB Bancorp, Inc. as of March 11, 2023?",
+   "doc": "fncb",
+   "pages": [
+    7
+   ],
+   "answer": "19,682,689 shares",
+   "accept": [
+    "19682689"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 15,
+   "q": "What was FNCB Bancorp, Inc.'s tax-equivalent net interest margin in 2022?",
+   "doc": "fncb",
+   "pages": [
+    40
+   ],
+   "answer": "3.38%",
+   "accept": [
+    "3.38"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 16,
+   "q": "What was the total number of shares bought back by Kelly Partners Group Holdings Limited from July 1, 2020, to April 7, 2021?",
+   "doc": "kelly-partners",
+   "pages": [
+    59
+   ],
+   "answer": "345,000",
+   "accept": [
+    "345000"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 17,
+   "q": "What is the ownership percentage of Kelly Partners Wollongong Partnership for Kelly Partners Group Holdings Limited?",
+   "doc": "kelly-partners",
+   "pages": [
+    80
+   ],
+   "answer": "59.64%",
+   "accept": [
+    "59.64"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 18,
+   "q": "What was the revenue contribution of the acquired business by Kelly Partners Northern Beaches from 1 February 2022 to 30 June 2022?",
+   "doc": "kelly-partners",
+   "pages": [
+    71
+   ],
+   "answer": "$406,962",
+   "accept": [
+    "406962"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 19,
+   "q": "What is the total number of shares authorized for Common Stock by Wheeler Real Estate Investment Trust, Inc. as of December 31, 2022?",
+   "doc": "wheeler",
+   "pages": [
+    78
+   ],
+   "answer": "200,000,000",
+   "accept": [
+    "200000000",
+    "200 million"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 20,
+   "q": "What is the trading symbol for the Notes issued by Wheeler Real Estate Investment Trust, Inc.?",
+   "doc": "wheeler",
+   "pages": [
+    80
+   ],
+   "answer": "WHLRL",
+   "accept": [
+    "whlrl"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 21,
+   "q": "What was the same store FFO increase for Wheeler Real Estate Investment Trust, Inc. during the year ended December 31, 2022?",
+   "doc": "wheeler",
+   "pages": [
+    29
+   ],
+   "answer": "$2.80 million",
+   "accept": [
+    "2.80",
+    "2.8"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 22,
+   "q": "What was the principal amount of the Wilmington Financing Agreement entered into by Wheeler Real Estate Investment Trust, Inc. on March 12, 2021?",
+   "doc": "wheeler",
+   "pages": [
+    54
+   ],
+   "answer": "$35.00 million",
+   "accept": [
+    "35.00",
+    "35.0",
+    "35 million"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 23,
+   "q": "What was the aggregate cost of the Series D Preferred shares purchased by Wheeler Real Estate Investment Trust, Inc. on March 12, 2021?",
+   "doc": "wheeler",
+   "pages": [
+    61
+   ],
+   "answer": "$6.00 million",
+   "accept": [
+    "6.00",
+    "6.0 million",
+    "6 million"
+   ],
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "q": "How much did Albany International Corp. spend on research and development for advanced programs?",
+   "doc": "albany",
+   "pages": [
+    16
+   ],
+   "answer": "$31.4 million",
+   "accept": [
+    "31.4",
+    "31,400",
+    "31400000"
+   ],
+   "id": 24,
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "q": "Did Brave Bison Group plc report any mergers or acquisitions during the year?",
+   "doc": "brave-bison",
+   "pages": [
+    6,
+    7,
+    8,
+    61
+   ],
+   "answer": "Yes",
+   "accept": [
+    "yes",
+    "did",
+    "acquired",
+    "acquisition"
+   ],
+   "id": 25,
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "q": "Which leadership position changed at Kelly Partners Group Holdings Limited in the reporting period?",
+   "doc": "kelly-partners",
+   "pages": [
+    3,
+    14
+   ],
+   "answer": "Non-Executive Independent Director",
+   "accept": [
+    "non-executive independent director",
+    "non executive independent director"
+   ],
+   "id": 26,
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "q": "What was Wheeler Real Estate Investment Trust's cash flow from operations for the year?",
+   "doc": "wheeler",
+   "pages": [
+    21,
+    40
+   ],
+   "answer": "$30.758 million",
+   "accept": [
+    "30.758",
+    "30,758",
+    "30758"
+   ],
+   "id": 27,
+   "answerable": true,
+   "source": "supplied"
+  },
+  {
+   "id": 28,
+   "q": "What was Albany International's total revenue in fiscal year 2027?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "supplied",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 29,
+   "q": "What did FNCB Bancorp pay in cyber insurance premiums last year?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "supplied",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 30,
+   "q": "What is Wheeler Real Estate Investment Trust's average tenant satisfaction score?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "supplied",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 31,
+   "q": "Which law firm advised Kelly Partners on its most recent acquisition?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 32,
+   "q": "What are Armadale Capital's proven gold reserves in Tanzania?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 33,
+   "q": "How many hours of safety training did FNCB Bancorp deliver per employee?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 34,
+   "q": "What is the average age of Wheeler Real Estate Investment Trust's shopping centres?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 35,
+   "q": "What did Kelly Partners Group pay its auditor for tax advice in 2019?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 36,
+   "q": "How many charging stations does Aurora Innovation operate?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "names a real company in the corpus and a plausible metric the report does not state"
+  },
+  {
+   "id": 37,
+   "q": "What was Armadale Capital Plc's gross margin for the year?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "the company reports no revenue line a gross margin could be computed from"
+  },
+  {
+   "id": 38,
+   "q": "What new products did Albany International Corp. launch during the year?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "the report describes programs and platforms, never a product launch list"
+  },
+  {
+   "id": 39,
+   "q": "How many fulfillment centres did Albany International Corp. operate at year end?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "a metric from a different industry, asked of a company in the corpus"
+  },
+  {
+   "id": 40,
+   "q": "How many hotels did Wheeler Real Estate Investment Trust own at year end?",
+   "doc": null,
+   "pages": [],
+   "answer": "NOT_IN_CONTEXT",
+   "accept": [],
+   "answerable": false,
+   "source": "worked_example",
+   "why_unanswerable": "a retail REIT holds shopping centres, so the metric does not exist for it"
+  }
+ ]
+}

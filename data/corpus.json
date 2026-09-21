@@ -1,0 +1,15 @@
+{
+  "note": "Ten annual reports. The first seven are the GenAI Week 5 corpus, unchanged, so the golden set from GenAI Lesson 17 still applies to them. The other three answer none of those questions: they are there to make every retrieval harder, which is what a corpus does when it grows.",
+  "documents": {
+    "albany": "Albany International Corp.",
+    "armadale": "Armadale Capital Plc",
+    "aurora": "Aurora Innovation, Inc.",
+    "brave-bison": "Brave Bison Group plc",
+    "fncb": "FNCB Bancorp, Inc.",
+    "kelly-partners": "Kelly Partners Group Holdings Limited",
+    "wheeler": "Wheeler Real Estate Investment Trust, Inc.",
+    "franklin-covey": "Franklin Covey Co.",
+    "james-halstead": "James Halstead plc",
+    "westwater": "Westwater Resources, Inc."
+  }
+}
