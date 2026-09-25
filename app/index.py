@@ -4,10 +4,12 @@ Everything above this file asks for "the chunks nearest this vector" and gets
 them. Swapping Qdrant for pgvector, Weaviate or a numpy array is a rewrite of
 this module and of nothing else. That is the reason it is a module.
 
-One thing here is a deliberate placeholder. In Lesson 1 the payload carries the
-chunk text, which makes Qdrant both the index and the store. It works, and it is
-wrong: an index is derived data, and derived data should be rebuildable from
-something else. Lesson 2 puts the text in Postgres and leaves the vectors here.
+In Lesson 1 the payload carried the whole chunk, which made Qdrant both the
+index and the store. From Lesson 2 it carries two fields: the chunk ID, which is
+the key back to the `chunks` table in Postgres, and the document slug, which the
+search filter needs. The text lives in one place. Qdrant holds only what can be
+recomputed from it, so dropping the collection loses nothing that
+`python -m app.reindex` cannot rebuild.
 """
 
 from __future__ import annotations
@@ -15,9 +17,9 @@ from __future__ import annotations
 import uuid
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (Distance, FieldCondition, Filter, FilterSelector,
+                                  MatchValue, PointStruct, VectorParams)
 
-from app.chunking import Chunk
 from app.config import settings
 from app.logs import get_logger
 
@@ -40,63 +42,64 @@ def point_id(chunk_id: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
 
 
-def recreate(dim: int) -> None:
-    """Drop the collection and make an empty one. Ingestion is not incremental
-    in Lesson 1; Lesson 3 makes it per-document."""
-    client = get_index()
-    client.delete_collection(settings.qdrant_collection)
-    client.create_collection(
-        collection_name=settings.qdrant_collection,
-        vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
-    )
-    log.info("collection %r recreated at %d dimensions", settings.qdrant_collection, dim)
+def _doc_filter(doc: str) -> Filter:
+    return Filter(must=[FieldCondition(key="doc", match=MatchValue(value=doc))])
 
 
-def upsert(chunks: list[Chunk], vectors, batch: int = 256) -> int:
+def exists() -> bool:
+    return get_index().collection_exists(settings.qdrant_collection)
+
+
+def drop() -> None:
+    get_index().delete_collection(settings.qdrant_collection)
+    log.info("collection %r dropped", settings.qdrant_collection)
+
+
+def create(dim: int) -> None:
+    """An empty collection, if there is none."""
+    if not exists():
+        get_index().create_collection(
+            collection_name=settings.qdrant_collection,
+            vectors_config=VectorParams(size=dim, distance=Distance.COSINE))
+        log.info("collection %r created at %d dimensions", settings.qdrant_collection, dim)
+
+
+def delete_document(doc: str) -> None:
+    """Remove one document's points, so re-ingesting it cannot leave strays."""
+    if exists():
+        get_index().delete(collection_name=settings.qdrant_collection,
+                           points_selector=FilterSelector(filter=_doc_filter(doc)))
+
+
+def upsert(chunks: list[dict], vectors, batch: int = 256) -> int:
+    """Index chunk rows. The payload is the link back to Postgres, not a copy."""
     client = get_index()
     for i in range(0, len(chunks), batch):
         client.upsert(
             collection_name=settings.qdrant_collection,
-            points=[PointStruct(id=point_id(c.id), vector=v.tolist(), payload=c.to_dict())
+            points=[PointStruct(id=point_id(c["id"]), vector=v.tolist(),
+                                payload={"chunk_id": c["id"], "doc": c["doc"]})
                     for c, v in zip(chunks[i:i + batch], vectors[i:i + batch])],
         )
     return len(chunks)
 
 
-def search(vector, limit: int, doc: str | None = None) -> list[tuple[dict, float]]:
-    """Nearest chunks, optionally restricted to one document.
+def search(vector, limit: int, doc: str | None = None) -> list[tuple[str, float]]:
+    """Chunk IDs nearest the vector, optionally restricted to one document.
 
-    The filter goes into the query rather than being applied to the results,
-    which is the Lesson 16 point: filter before you score, not after.
+    IDs and scores only. The caller looks the text up in the rows it loaded from
+    Postgres. The filter goes into the query rather than being applied to the
+    results, which is the Lesson 16 point: filter before you score, not after.
     """
-    flt = None
-    if doc:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-        flt = Filter(must=[FieldCondition(key="doc", match=MatchValue(value=doc))])
     hits = get_index().query_points(
         collection_name=settings.qdrant_collection, query=vector.tolist(),
-        limit=limit, query_filter=flt, with_payload=True).points
-    return [(h.payload, float(h.score)) for h in hits]
-
-
-def all_chunks() -> list[dict]:
-    """Every chunk payload, for the BM25 side of the hybrid retriever.
-
-    BM25 needs the whole corpus in memory, so something has to hold it. In
-    Lesson 1 that something is Qdrant, scrolled at startup. The production
-    answer is a search engine that owns its own index; the Lesson 2 answer is
-    Postgres. Either way this function is the seam.
-    """
-    out, offset = [], None
-    while True:
-        points, offset = get_index().scroll(
-            collection_name=settings.qdrant_collection, limit=1024,
-            offset=offset, with_payload=True, with_vectors=False)
-        out.extend(p.payload for p in points)
-        if offset is None:
-            return out
+        limit=limit, query_filter=_doc_filter(doc) if doc else None,
+        with_payload=True).points
+    return [(h.payload["chunk_id"], float(h.score)) for h in hits]
 
 
 def count() -> int:
+    """Points in the collection, and zero rather than an error if there is none."""
+    if not exists():
+        return 0
     return int(get_index().count(settings.qdrant_collection).count)

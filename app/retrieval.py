@@ -5,6 +5,10 @@ notebook the BM25 index was a global built by a cell; here it is state that has
 to be built once and reused, because rebuilding it per question would put a
 corpus scan in the latency of every request.
 
+From Lesson 2 the chunks come from Postgres, not from Qdrant. BM25 is rebuilt
+from the `chunks` table at startup, and the dense side gets chunk IDs back from
+the vector index and looks them up here. The text lives in one store.
+
 `get_retriever()` is the seam Lesson 3 needs: the API builds one at startup and
 hands it to every request handler.
 """
@@ -19,7 +23,8 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 from app.config import settings
-from app.index import all_chunks, search
+from app.db import load_chunks
+from app.index import count as index_count, search
 from app.logs import get_logger
 from app.models import embed_query, rerank_scores
 
@@ -50,9 +55,12 @@ class Retriever:
 
     def __init__(self) -> None:
         t0 = time.perf_counter()
-        self.chunks = all_chunks()
+        self.chunks = load_chunks()
         if not self.chunks:
-            raise RuntimeError("the index is empty; run `python -m app.ingest` first")
+            raise RuntimeError("no chunks in Postgres; run `python -m app.ingest` first")
+        if (n := index_count()) != len(self.chunks):
+            log.warning("Qdrant has %d points and Postgres %d chunks; "
+                        "run `python -m app.reindex`", n, len(self.chunks))
         self.texts = [f"{c['title']}, page {c['page']}\n{c['text']}" for c in self.chunks]
         self.by_id = {c["id"]: i for i, c in enumerate(self.chunks)}
         self.bm25 = BM25Okapi([tokenize(t) for t in self.texts])
@@ -61,10 +69,11 @@ class Retriever:
 
     # ---- the three stages, each one a method you can call on its own -----
     def dense(self, query: str, k: int) -> dict[int, int]:
-        """Chunk position -> rank, from the vector index."""
+        """Chunk position -> rank, from the vector index. Qdrant returns IDs; the
+        text they point at is the row loaded from Postgres."""
         hits = search(embed_query(query), limit=k)
-        return {self.by_id[p["id"]]: r for r, (p, _) in enumerate(hits, 1)
-                if p["id"] in self.by_id}
+        return {self.by_id[cid]: r for r, (cid, _) in enumerate(hits, 1)
+                if cid in self.by_id}
 
     def lexical(self, query: str, k: int) -> dict[int, int]:
         """Chunk position -> rank, from BM25 over the same text."""

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     openai_base: str = "https://api.openai.com/v1"
     gen_model: str = "gpt-4o-mini"
 
-    # the stores. Lesson 2 starts using database_url; Lesson 1 only needs Qdrant.
+    # the stores. Postgres holds the truth, Qdrant an index derived from it.
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "chunks"
     database_url: str = "postgresql+psycopg2://docchat:docchat@localhost:5432/docchat"

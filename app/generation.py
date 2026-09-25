@@ -46,13 +46,18 @@ class Answer:
     citations: list[dict] = field(default_factory=list)
     refused: bool = False
     reason: str = ""
+    model: str | None = None
+    n_in: int = 0
+    n_out: int = 0
     usd: float = 0.0
     seconds: float = 0.0
 
     def to_dict(self) -> dict:
         return {"question": self.question, "answer": self.text,
                 "citations": self.citations, "refused": self.refused,
-                "reason": self.reason, "usd": round(self.usd, 6),
+                "reason": self.reason, "model": self.model,
+                "tokens": {"in": self.n_in, "out": self.n_out},
+                "usd": round(self.usd, 6),
                 "seconds": round(self.seconds, 2),
                 "sources": [h.source for h in self.hits]}
 
@@ -116,20 +121,20 @@ def answer_question(question: str, top_k: int | None = None,
                       reason=f"retrieval gate: best score {best:.3f} below {gate:.2f}",
                       seconds=time.perf_counter() - t0)
 
-    client = get_client()
-    before = client.usd
-    text = client.complete(
+    c = get_client().complete(
         [{"role": "system", "content": prompt("answer")},
          {"role": "user",
           "content": f"Context:\n{build_context(hits)}\n\nQuestion: {question}"}],
-        max_tokens=220).text.strip()
+        max_tokens=220)
+    text = c.text.strip()
 
     refused = text.startswith(REFUSAL)
     return Answer(question=question, text=text, hits=hits,
                   citations=[] if refused else resolve_citations(text, hits),
                   refused=refused,
                   reason="the model found no support in the context" if refused else "",
-                  usd=client.usd - before, seconds=time.perf_counter() - t0)
+                  model=c.model, n_in=c.n_in, n_out=c.n_out, usd=c.usd,
+                  seconds=time.perf_counter() - t0)
 
 
 def condense(turns: list[dict], question: str) -> str:

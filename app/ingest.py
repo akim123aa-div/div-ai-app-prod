@@ -3,6 +3,9 @@
 The pipeline runs from a terminal, with no Jupyter anywhere in the picture.
 That is most of what Lesson 1 is about: a notebook cannot be started by cron,
 by a Dockerfile, or by a colleague who does not have your kernel state.
+
+From Lesson 2 it writes Postgres first and indexes Qdrant from the rows. To
+rebuild only the index, without parsing anything, use `python -m app.reindex`.
 """
 
 import argparse
@@ -19,9 +22,9 @@ def main() -> None:
     args = ap.parse_args()
 
     setup_logging()
-    docs = load_manifest()
+    docs = None
     if args.only:
-        docs = {k: v for k, v in docs.items() if k in set(args.only)}
+        docs = {k: v for k, v in load_manifest().items() if k in set(args.only)}
     print(json.dumps(ingest(docs), indent=2))
 
 

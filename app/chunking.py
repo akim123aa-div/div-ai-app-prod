@@ -51,6 +51,10 @@ class Chunk:
     def source(self) -> str:
         return f"{self.title}, page {self.page}"
 
+    @property
+    def n_tokens(self) -> int:
+        return len(ENC.encode(self.text))
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -69,8 +73,18 @@ def read_pages(path: Path) -> list[str]:
     The second half -- flag pages that look like tables, re-parse just those with
     pdfplumber -- is left to you, because which pages need it is a property of
     your corpus and not of this code.
+
+    NUL characters are dropped. Two 10-K cover pages in this corpus render their
+    checkboxes as `\x00`. Qdrant stored them without complaint in Lesson 1;
+    Postgres refuses them in a text column, which is how Lesson 2 found them.
     """
-    return [(p.extract_text() or "") for p in pypdf.PdfReader(str(path)).pages]
+    return [(p.extract_text() or "").replace("\x00", "")
+            for p in pypdf.PdfReader(str(path)).pages]
+
+
+def page_count(path: Path) -> int:
+    """Pages in the file, including the ones that yield no text."""
+    return len(pypdf.PdfReader(str(path)).pages)
 
 
 def boilerplate(pages: list[str], share: float = 0.35) -> set[str]:

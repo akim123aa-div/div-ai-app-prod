@@ -3,7 +3,7 @@
 One layer per lesson, each one a git tag:
 
     m9-l1  this package, run from the command line
-    m9-l2  Postgres as the source of truth
+    m9-l2  Postgres as the source of truth, Qdrant derived from it
     m9-l3  a FastAPI service in front of it
     ...
 
