@@ -11,16 +11,24 @@ Three things from that lesson are load-bearing and all three are here:
 The prompts live in `app/prompts/*.md` rather than in this file. A prompt is
 edited far more often than the code around it, it is read by people who do not
 write Python, and it wants a diff of its own. Lesson 4 adds a version to it.
+
+There are two ways to get an answer, and they share every step but one.
+`answer_question` waits for the whole reply; `stream_answer` yields it in
+fragments as the model writes it. Retrieval, the gate, the prompt and the
+citation parsing are the same functions in both, so the API's two chat
+endpoints cannot drift apart.
 """
 
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 
 from app.config import ROOT, settings
-from app.llm import get_client
+from app.llm import Completion, get_client
 from app.logs import get_logger
 from app.retrieval import Hit, get_retriever
 
@@ -104,30 +112,28 @@ def resolve_citations(text: str, hits: list[Hit]) -> list[dict]:
     return out
 
 
-def answer_question(question: str, top_k: int | None = None,
-                    gate: float | None = None) -> Answer:
-    """Retrieve, decide whether to answer at all, then answer."""
-    import time
-
-    t0 = time.perf_counter()
+def retrieve(question: str, top_k: int | None = None,
+             gate: float | None = None) -> tuple[list[Hit], str]:
+    """The hits, and a reason to refuse before generating ('' if there is none)."""
     gate = settings.gate if gate is None else gate
     hits = get_retriever().retrieve(question, top_k=top_k)
-
     best = max((h.score for h in hits), default=0.0)
     if best < gate:
         log.info("refused before generating: best reranker score %.3f < gate %.2f",
                  best, gate)
-        return Answer(question=question, text=REFUSAL, hits=hits, refused=True,
-                      reason=f"retrieval gate: best score {best:.3f} below {gate:.2f}",
-                      seconds=time.perf_counter() - t0)
+        return hits, f"retrieval gate: best score {best:.3f} below {gate:.2f}"
+    return hits, ""
 
-    c = get_client().complete(
-        [{"role": "system", "content": prompt("answer")},
-         {"role": "user",
-          "content": f"Context:\n{build_context(hits)}\n\nQuestion: {question}"}],
-        max_tokens=220)
+
+def answer_messages(question: str, hits: list[Hit]) -> list[dict]:
+    return [{"role": "system", "content": prompt("answer")},
+            {"role": "user",
+             "content": f"Context:\n{build_context(hits)}\n\nQuestion: {question}"}]
+
+
+def finish(question: str, hits: list[Hit], c: Completion, t0: float) -> Answer:
+    """The model's reply, checked for a refusal and its citations resolved."""
     text = c.text.strip()
-
     refused = text.startswith(REFUSAL)
     return Answer(question=question, text=text, hits=hits,
                   citations=[] if refused else resolve_citations(text, hits),
@@ -135,6 +141,57 @@ def answer_question(question: str, top_k: int | None = None,
                   reason="the model found no support in the context" if refused else "",
                   model=c.model, n_in=c.n_in, n_out=c.n_out, usd=c.usd,
                   seconds=time.perf_counter() - t0)
+
+
+def answer_question(question: str, top_k: int | None = None,
+                    gate: float | None = None) -> Answer:
+    """Retrieve, decide whether to answer at all, then answer."""
+    t0 = time.perf_counter()
+    hits, why = retrieve(question, top_k, gate)
+    if why:
+        return Answer(question=question, text=REFUSAL, hits=hits, refused=True,
+                      reason=why, seconds=time.perf_counter() - t0)
+    c = get_client().complete(answer_messages(question, hits), max_tokens=220)
+    return finish(question, hits, c, t0)
+
+
+def stream_answer(question: str, top_k: int | None = None,
+                  gate: float | None = None) -> Iterator[str | Answer]:
+    """The same answer, as text fragments while the model writes it, and then the
+    finished `Answer`, with citations and cost, as the last item.
+
+    Citations come last because they cannot come earlier: a marker is only known
+    once the model has written it, and the list is only complete at the end.
+
+    One thing is held back. A refusal is the literal NOT_IN_CONTEXT, and it
+    arrives in fragments like "NOT", "_IN", "_CONTEXT". Streaming those would put
+    the sentinel on a user's screen before anyone knew it was one. So nothing is
+    sent while the text so far could still be the start of a refusal; the first
+    fragment that rules it out releases everything held.
+    """
+    t0 = time.perf_counter()
+    hits, why = retrieve(question, top_k, gate)
+    if why:
+        yield Answer(question=question, text=REFUSAL, hits=hits, refused=True,
+                     reason=why, seconds=time.perf_counter() - t0)
+        return
+
+    held, released, done = "", False, None
+    for x in get_client().stream(answer_messages(question, hits), max_tokens=220):
+        if isinstance(x, Completion):
+            done = x
+        elif released:
+            yield x
+        else:
+            held += x
+            head = held.lstrip()
+            if not (REFUSAL.startswith(head) or head.startswith(REFUSAL)):
+                released = True
+                yield held
+    a = finish(question, hits, done, t0)
+    if held and not released and not a.refused:    # a reply shorter than the sentinel
+        yield held
+    yield a
 
 
 def condense(turns: list[dict], question: str) -> str:

@@ -4,7 +4,7 @@ Same three ideas it always had: one interface over several providers, retries
 that know which failures are worth retrying, and per-call accounting. What is
 new is only where it lives. `import course_utils` worked because the file sat
 next to the notebook; `from app.llm import chat` works from anywhere, including
-from a container, a test, and Lesson 3's request handler.
+from a container, a test, and the API's request handlers.
 
 Lesson 4 adds a fallback provider here. Lesson 7 points `base_url` at Ollama.
 Neither of those is a rewrite, which is the reason the transport is one module.
@@ -149,13 +149,25 @@ class LLMClient:
         return c
 
     def stream(self, messages, max_tokens=300, temperature=0.0, **extra):
-        """Yield text fragments as they arrive. Lesson 3 puts this behind HTTP."""
+        """Yield text fragments as they arrive, then one `Completion` for the whole.
+
+        The last item is the accounting: tokens and cost only exist once the
+        provider sends its final usage event, after the last fragment. Callers
+        loop, and treat a `Completion` as the end:
+
+            for x in client.stream(messages):
+                if isinstance(x, Completion): done = x
+                else: print(x, end="")
+
+        The API's streaming chat endpoint puts this behind HTTP.
+        """
         if not self.api_key:
             raise LLMFatal("no API key; copy .env.example to .env and fill it in")
         body = {"model": self.model, "messages": messages, "max_tokens": max_tokens,
                 "temperature": temperature, "stream": True,
                 "stream_options": {"include_usage": True}, **extra}
-        t0, n_in, n_out = time.perf_counter(), 0, 0
+        t0, n_in, n_out, model, finish = time.perf_counter(), 0, 0, self.model, "other"
+        parts: list[str] = []
         r = self._post(body, stream=True)
         for line in r.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
@@ -164,16 +176,23 @@ class LLMClient:
             if payload == "[DONE]":                   # a sentinel, not JSON
                 break
             ev = json.loads(payload)
+            model = ev.get("model") or model
             if ev.get("usage"):
                 n_in = ev["usage"]["prompt_tokens"]
                 n_out = ev["usage"]["completion_tokens"]
             for ch in ev.get("choices", []):
+                finish = ch.get("finish_reason") or finish
                 piece = ch.get("delta", {}).get("content")
                 if piece:
+                    parts.append(piece)
                     yield piece
-        self.usd += cost_of(self.model, n_in, n_out)
-        log.info("llm %s stream  %d in / %d out  %.2fs", self.model, n_in, n_out,
-                 time.perf_counter() - t0)
+        usd = cost_of(self.model, n_in, n_out)
+        self.usd += usd
+        c = Completion(text="".join(parts), finish=finish, model=model, n_in=n_in,
+                       n_out=n_out, seconds=time.perf_counter() - t0, usd=usd)
+        log.info("llm %s stream  %d in / %d out  %.2fs  $%.5f",
+                 c.model, c.n_in, c.n_out, c.seconds, c.usd)
+        yield c
 
 
 _client: LLMClient | None = None

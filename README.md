@@ -27,7 +27,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key.
 
 ```bash
 git clone <this repo> && cd reference_app
-git checkout m9-l2
+git checkout m9-l3
 
 cp .env.example .env          # then put your key in it
 uv sync --all-groups          # creates .venv from pyproject.toml
@@ -46,7 +46,7 @@ new ones. Nothing in the code needs to know.
 python -m app.ingest                       # parse, chunk, write Postgres, index Qdrant. A few minutes.
 python -m app.ask "How many patents did Aurora Innovation hold at year end?"
 python -m app.reindex                      # drop the vector index, rebuild it from Postgres
-python scripts/eval_golden.py --label m9-l2
+python scripts/eval_golden.py --label m9-l3
 ```
 
 Run these from the repository root. The first `ingest` downloads two small
@@ -60,6 +60,31 @@ answer as a conversation, with citations, tokens and cost.
 
 Coming from `m9-l1`? Run `uv sync --all-groups` (two new dependencies) and then
 `python -m app.ingest` once. Ingestion now writes somewhere new.
+
+## The API
+
+```bash
+python -m app.serve                        # http://localhost:8000, about 15s to start
+open http://localhost:8000/docs            # every route, with a "Try it out" button
+```
+
+| route | what it does |
+|---|---|
+| `POST /documents` | upload a PDF; answers `202` with a `pending` document and ingests it in the background |
+| `GET /documents`, `GET /documents/{id}` | list, or poll one until `ready` or `failed` |
+| `DELETE /documents/{id}` | remove it from Postgres, Qdrant and the running retriever |
+| `POST /chat` | one question, the whole answer as JSON |
+| `POST /chat/stream` | the same answer as server-sent events: `delta`*, `citations`, `usage`, `done`, or `error` |
+| `GET /conversations`, `GET /conversations/{id}` | what was asked and answered, from Postgres |
+| `GET /health` | what is being searched, and what startup cost |
+
+Uploaded PDFs are kept in `data/uploads/` and get their ID from the filename, so
+uploading the same file again replaces it. The embedder, the reranker and BM25 are
+built once at startup. A job running when the server stops is lost, and the next
+start marks it `failed`, because background tasks live in the API process.
+
+Coming from `m9-l2`? Run `uv sync --all-groups` (three new dependencies). The
+database needs nothing: the tables did not change.
 
 ## Layout
 
@@ -76,20 +101,28 @@ app/
   retrieval.py    dense + BM25 + fusion + rerank          (GenAI Lesson 15)
   generation.py   context blocks, citations, refusal      (GenAI Lesson 16)
   prompts/        prompts are files, not string literals
+  api/            the HTTP layer: routers, schemas, startup  (Lesson 3)
+    main.py         the app, lifespan, /health, error mapping
+    schemas.py      every request and response body, and the SSE events
+    documents.py    upload -> background job -> poll
+    chat.py         /chat and /chat/stream
+    conversations.py
   ingest.py       entry point: python -m app.ingest
   ask.py          entry point: python -m app.ask "..."
   reindex.py      entry point: python -m app.reindex
+  serve.py        entry point: python -m app.serve
 scripts/
   eval_golden.py  the golden set, run as a script, writing a scorecard
 data/
   pdfs/           the corpus: ten annual reports
+  uploads/        PDFs uploaded through the API, gitignored
   corpus.json     which PDFs, and what each is called
   golden/         the 40-question golden set from GenAI Lesson 17
   runs/           scorecards, gitignored, one per run
 compose.yml       Postgres and Qdrant. Lesson 6 adds the rest of the stack.
 
 Postgres tables, created by `create_all` on first run:
-  documents       one row per PDF; status is always "ready" until Lesson 3
+  documents       one row per PDF; pending -> ready | failed
   chunks          the text that is searched and cited; id = "doc#pN#i"
   conversations   a thread of turns; user_id is empty until Lesson 4
   messages        each turn, with citations (JSON), tokens and cost
@@ -99,13 +132,13 @@ Postgres tables, created by `create_all` on first run:
 
 Forty questions, twenty-seven of them answerable, ten documents.
 
-| metric | `m9-l1` | `m9-l2` |
-|---|---|---|
-| hit@5 | 0.963 | 0.963 |
-| answer accuracy | 0.852 | 0.852 |
-| false answers on the unanswerable | 0.000 | 0.000 |
-| answers carrying a citation | 0.889 | 0.889 |
-| cost for the whole set | $0.024 | $0.010 |
+| metric | `m9-l1` | `m9-l2` | `m9-l3` |
+|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.852 | 0.852 |
+| false answers on the unanswerable | 0.000 | 0.000 | 0.000 |
+| answers carrying a citation | 0.889 | 0.889 | 0.889 |
+| cost for the whole set | $0.024 | $0.010 | $0.010 |
 
 `m9-l1` is the baseline. Every later lesson changes something underneath it,
 and the question each time is whether these numbers moved. At `m9-l2` the
@@ -113,3 +146,7 @@ quality numbers did not. The cost did, because `m9-l1` over-counted it: the
 golden set runs four questions in parallel on one client, and each question's
 cost was that client's running total before and after, which included its
 neighbours' calls. `m9-l2` reads the cost from each call.
+
+At `m9-l3` nothing moved, question by question. The API is a transport; the
+pipeline behind it is the same functions, and the golden set still calls them
+in-process. Lesson 8 runs it over HTTP.

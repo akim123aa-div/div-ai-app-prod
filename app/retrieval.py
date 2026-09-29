@@ -9,8 +9,10 @@ From Lesson 2 the chunks come from Postgres, not from Qdrant. BM25 is rebuilt
 from the `chunks` table at startup, and the dense side gets chunk IDs back from
 the vector index and looks them up here. The text lives in one store.
 
-`get_retriever()` is the seam Lesson 3 needs: the API builds one at startup and
-hands it to every request handler.
+`get_retriever()` is the seam the API needs: it builds one at startup and every
+request handler uses it. `refresh_retriever()` builds a new one from the table
+and swaps it in, which the API does after an upload finishes. A request already
+running keeps the retriever it started with; the next one gets the new one.
 """
 
 from __future__ import annotations
@@ -51,19 +53,28 @@ class Hit:
 
 
 class Retriever:
-    """Built once, queried many times."""
+    """Built once, queried many times.
 
-    def __init__(self) -> None:
+    `include` adds documents that are not `ready` yet. The upload job uses it to
+    build a retriever that can already see the new document, and only then marks
+    the document ready, so that a client who sees `ready` can search it at once.
+    """
+
+    def __init__(self, include: list[str] | None = None) -> None:
         t0 = time.perf_counter()
         self.chunks = load_chunks()
+        if include:
+            self.chunks += load_chunks(include, ready_only=False)
         if not self.chunks:
-            raise RuntimeError("no chunks in Postgres; run `python -m app.ingest` first")
-        if (n := index_count()) != len(self.chunks):
+            # An empty corpus is a real state now: the API starts before the first
+            # upload. Every question is refused by the gate until one arrives.
+            log.warning("no chunks in Postgres; ingest or upload a document")
+        elif (n := index_count()) != len(self.chunks):
             log.warning("Qdrant has %d points and Postgres %d chunks; "
                         "run `python -m app.reindex`", n, len(self.chunks))
         self.texts = [f"{c['title']}, page {c['page']}\n{c['text']}" for c in self.chunks]
         self.by_id = {c["id"]: i for i, c in enumerate(self.chunks)}
-        self.bm25 = BM25Okapi([tokenize(t) for t in self.texts])
+        self.bm25 = BM25Okapi([tokenize(t) for t in self.texts]) if self.texts else None
         log.info("retriever ready: %d chunks, BM25 built in %.1fs",
                  len(self.chunks), time.perf_counter() - t0)
 
@@ -94,6 +105,8 @@ class Retriever:
         """The whole pipeline: fuse two rankings, rerank the shortlist, cut to k."""
         top_k = top_k or settings.top_k
         shortlist = shortlist or settings.shortlist
+        if not self.chunks:
+            return []
 
         fused = self.fuse(self.dense(query, shortlist), self.lexical(query, shortlist))
         candidates = sorted(fused, key=lambda i: -fused[i])[:shortlist]
@@ -111,4 +124,12 @@ def get_retriever() -> Retriever:
     global _retriever
     if _retriever is None:
         _retriever = Retriever()
+    return _retriever
+
+
+def refresh_retriever(include: list[str] | None = None) -> Retriever:
+    """Rebuild from Postgres and swap. The swap is one assignment, so no request
+    ever sees a half-built retriever."""
+    global _retriever
+    _retriever = Retriever(include)
     return _retriever

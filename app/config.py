@@ -46,14 +46,30 @@ class Settings(BaseSettings):
     chunk_tokens: int = 400
     chunk_overlap: int = 60
 
+    # the API (Lesson 3). The server binds host:port; clients call api_url.
+    # They are different values because in Lesson 6 the server binds 0.0.0.0
+    # inside a container and the UI reaches it as http://api:8000.
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    api_url: str = "http://localhost:8000"
+    max_upload_mb: int = 50
+
     # paths and noise
     corpus_dir: str = "data/pdfs"
+    upload_dir: str = "data/uploads"
     log_level: str = "INFO"
 
     @property
     def corpus_path(self) -> Path:
         """Relative paths resolve against the repository, not the shell's cwd."""
         p = Path(self.corpus_dir)
+        return p if p.is_absolute() else ROOT / p
+
+    @property
+    def upload_path(self) -> Path:
+        """Where uploaded PDFs are kept. A directory here, a volume in Lesson 6,
+        object storage in production."""
+        p = Path(self.upload_dir)
         return p if p.is_absolute() else ROOT / p
 
 
