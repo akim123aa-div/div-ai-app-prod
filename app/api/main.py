@@ -1,4 +1,4 @@
-"""The FastAPI app: startup, three routers, a health check, and error mapping.
+"""The FastAPI app: startup, four routers, a health check, and error mapping.
 
     python -m app.serve                      # or: uvicorn app.api.main:app
     open http://localhost:8000/docs
@@ -30,9 +30,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app import db, index
-from app.api import chat, conversations, documents
+from app.api import chat, conversations, documents, usage
 from app.api.schemas import Health
 from app.config import settings
+from app.generation import prompt_version
 from app.llm import LLMError, LLMFatal
 from app.logs import get_logger, setup_logging
 from app.models import embed_query, get_embedder, get_reranker, rerank_scores
@@ -63,19 +64,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="docchat",
-    version="m9-l3",
+    version="m9-l4",
     summary="Grounded answers over uploaded PDFs, with citations. Module 9 reference app.",
     lifespan=lifespan,
 )
 app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(conversations.router)
+app.include_router(usage.router)
 
 
 @app.get("/health", response_model=Health, tags=["service"])
 def health(request: Request) -> Health:
     """Up, and searching how much. A client's first call, and a container's healthcheck in Lesson 6."""
     return Health(status="ok", pid=os.getpid(), model=settings.gen_model,
+                  fallback_model=(settings.fallback_model
+                                  if settings.fallback_api_key else None),
+                  prompt_version=prompt_version(), corpus=get_retriever().fingerprint,
+                  guard_context=settings.guard_context,
                   documents=db.document_counts(),
                   chunks=len(get_retriever().chunks), points=index.count(),
                   startup_seconds=request.app.state.startup)

@@ -15,6 +15,16 @@ Four tables, and each one is here because something must survive a restart:
 Everything else the application holds is derived and rebuildable: vectors live in
 Qdrant, BM25 is rebuilt from `chunks` at startup, models are reloaded from disk.
 
+Lesson 4 adds two more, and both are derived too. Delete every row in them and
+the application still answers correctly; it only pays again for what they saved.
+
+    summaries      the older turns of a conversation, folded into one paragraph
+    answer_cache   answers already paid for, keyed on everything that shaped them
+
+Both are new tables rather than new columns on old ones, and that is deliberate.
+`create_all` adds a missing table to a database that already has the others,
+so `m9-l3` data upgrades by starting the server. A new column would not appear.
+
 The API in `app/api/` calls the functions at the bottom of this file and never
 writes SQL itself. Swap Postgres for another database and this module
 changes; nothing above it does.
@@ -27,7 +37,7 @@ and for SQLAlchemy that is Alembic. This module stops at naming it.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 
 from sqlalchemy import (JSON, Engine, ForeignKey, Text, create_engine, delete, func,
@@ -108,6 +118,44 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+class Summary(Base):
+    """The turns that left a conversation's window, as one paragraph (Lesson 4).
+
+    One row per conversation, rewritten each time more turns are folded in.
+    `upto_message_id` is the last message the summary covers; everything after
+    it is still sent to the model in full.
+    """
+    __tablename__ = "summaries"
+
+    conversation_id: Mapped[int] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True)
+    upto_message_id: Mapped[int]
+    text: Mapped[str] = mapped_column(Text)
+    n_tokens: Mapped[int]
+    updated_at: Mapped[datetime] = mapped_column(server_default=func.now(),
+                                                 onupdate=func.now())
+
+
+class CacheEntry(Base):
+    """One answer that was paid for once and can be served again (Lesson 4).
+
+    The key is a hash; the columns beside it are the parts it was made from,
+    kept so that a person reading this table can see why two keys differ.
+    """
+    __tablename__ = "answer_cache"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    query: Mapped[str] = mapped_column(Text)
+    corpus: Mapped[str]
+    prompt_version: Mapped[str]
+    model: Mapped[str]
+    answer: Mapped[dict] = mapped_column(JSON)      # text, citations, refused, reason
+    n_tokens: Mapped[int] = mapped_column(default=0)  # what a hit saves
+    usd: Mapped[float] = mapped_column(default=0.0)
+    hits: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
 # ---- connection --------------------------------------------------------------
@@ -274,6 +322,84 @@ def record_turn(question: str, answer: str, *, citations: list[dict],
 def conversation_exists(conversation_id: int) -> bool:
     with session() as s:
         return s.get(Conversation, conversation_id) is not None
+
+
+def conversation_owner(conversation_id: int) -> tuple[bool, str | None]:
+    """(exists, user_id). Conversations from before Lesson 4 have no owner."""
+    with session() as s:
+        conv = s.get(Conversation, conversation_id)
+        return (conv is not None, conv.user_id if conv else None)
+
+
+def load_messages(conversation_id: int) -> list[dict]:
+    """Every message in a conversation, oldest first, as the memory needs them."""
+    q = (select(Message.id, Message.role, Message.content, Message.refused)
+         .where(Message.conversation_id == conversation_id).order_by(Message.id))
+    with session() as s:
+        return [dict(r._mapping) for r in s.execute(q)]
+
+
+# ---- summaries (Lesson 4) ----------------------------------------------------
+def get_summary(conversation_id: int) -> dict | None:
+    with session() as s:
+        r = s.get(Summary, conversation_id)
+        return ({"upto_message_id": r.upto_message_id, "text": r.text,
+                 "n_tokens": r.n_tokens} if r else None)
+
+
+def save_summary(conversation_id: int, upto_message_id: int, text: str,
+                 n_tokens: int) -> None:
+    with session() as s, s.begin():
+        r = s.get(Summary, conversation_id)
+        if r is None:
+            s.add(Summary(conversation_id=conversation_id, upto_message_id=upto_message_id,
+                          text=text, n_tokens=n_tokens))
+        else:
+            r.upto_message_id, r.text, r.n_tokens = upto_message_id, text, n_tokens
+
+
+# ---- per-user budgets (Lesson 4) ---------------------------------------------
+def tokens_used(user_id: str, hours: float) -> tuple[int, float]:
+    """Tokens in + out one user spent in the last `hours`, and the seconds until
+    the oldest of those turns leaves the window (0 if there are none).
+
+    The budget is a SUM over rows that already exist. There is no counter to keep
+    in step with them, so there is nothing that can drift. The clock is the
+    database's, the same one that stamped `created_at`.
+    """
+    window = timedelta(hours=hours)
+    q = (select(func.coalesce(func.sum(Message.n_in + Message.n_out), 0),
+                func.extract("epoch", func.min(Message.created_at) + window - func.now()))
+         .join(Conversation)
+         .where(Conversation.user_id == user_id,
+                Message.created_at >= func.now() - window))
+    with session() as s:
+        used, reset_in = s.execute(q).one()
+        return int(used), max(float(reset_in or 0.0), 0.0)
+
+
+# ---- the response cache (Lesson 4) -------------------------------------------
+def cache_get(key: str) -> dict | None:
+    """The stored answer for a key, counting the hit, or None."""
+    with session() as s, s.begin():
+        e = s.get(CacheEntry, key)
+        if e is None:
+            return None
+        e.hits += 1
+        return {**e.answer, "model": e.model, "n_tokens": e.n_tokens, "usd": e.usd}
+
+
+def cache_put(key: str, *, query: str, corpus: str, prompt_version: str, model: str,
+              answer: dict, n_tokens: int, usd: float) -> None:
+    with session() as s, s.begin():
+        s.merge(CacheEntry(key=key, query=query, corpus=corpus,
+                           prompt_version=prompt_version, model=model, answer=answer,
+                           n_tokens=n_tokens, usd=usd, hits=0))
+
+
+def cache_clear() -> int:
+    with session() as s, s.begin():
+        return s.execute(delete(CacheEntry)).rowcount
 
 
 def list_conversations(limit: int = 20) -> list[dict]:

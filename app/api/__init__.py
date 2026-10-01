@@ -5,6 +5,7 @@
     documents.py      upload, list, poll, delete         /documents
     chat.py           one question, whole or streamed     /chat, /chat/stream
     conversations.py  what was said, read back            /conversations
+    usage.py          what a user has spent of a budget   /usage            (Lesson 4)
 
 The rule for this package is the one `db.py` and `index.py` already follow, one
 layer up: no retrieval, no prompts and no SQL in here. A handler parses the

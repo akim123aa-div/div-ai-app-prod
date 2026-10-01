@@ -17,6 +17,7 @@ running keeps the retriever it started with; the next one gets the new one.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from dataclasses import dataclass
@@ -74,6 +75,12 @@ class Retriever:
                         "run `python -m app.reindex`", n, len(self.chunks))
         self.texts = [f"{c['title']}, page {c['page']}\n{c['text']}" for c in self.chunks]
         self.by_id = {c["id"]: i for i, c in enumerate(self.chunks)}
+        # What this retriever can find, in twelve characters. Any upload, delete or
+        # re-chunk changes it, and the response cache keys on it (Lesson 4).
+        h = hashlib.sha256()
+        for c in self.chunks:
+            h.update(f"{c['id']}\0{c['text']}\0".encode())
+        self.fingerprint = h.hexdigest()[:12]
         self.bm25 = BM25Okapi([tokenize(t) for t in self.texts]) if self.texts else None
         log.info("retriever ready: %d chunks, BM25 built in %.1fs",
                  len(self.chunks), time.perf_counter() - t0)

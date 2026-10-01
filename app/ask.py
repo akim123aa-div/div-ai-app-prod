@@ -9,12 +9,20 @@ transport wrapped around exactly these three calls.
 From Lesson 2 each question and its answer are saved to Postgres as a one-turn
 conversation, with the citations, tokens and cost. The process exits; the row
 does not. Pass `--conversation ID` to add a turn to an existing one.
+
+From Lesson 4 that turn goes through `answer_turn`, the same function the API
+calls, so a follow-up asked here is condensed against the stored history:
+
+    $ python -m app.ask --conversation 76 "And how many did it hold the year before?"
+
+`--no-save` still answers through the plain pipeline, with no memory and no cache.
 """
 
 import argparse
 import json
 
 from app import db
+from app.conversation import answer_turn
 from app.generation import answer_question
 from app.logs import setup_logging
 
@@ -30,18 +38,20 @@ def main() -> None:
 
     setup_logging()
     db.init_db()
-    a = answer_question(args.question, top_k=args.k)
-    conv = None
-    if not args.no_save:
-        conv = db.record_turn(args.question, a.text, citations=a.citations,
-                              refused=a.refused, model=a.model, n_in=a.n_in,
-                              n_out=a.n_out, usd=a.usd,
-                              conversation_id=args.conversation)
+    conv, query = None, args.question
+    if args.no_save:
+        a = answer_question(args.question, top_k=args.k)
+    else:
+        t = answer_turn(args.question, args.conversation, top_k=args.k)
+        a, conv, query = t.answer, t.conversation_id, t.query
+        a.usd = t.usd                       # the whole turn, condensing included
 
     if args.json:
         print(json.dumps({**a.to_dict(), "conversation_id": conv}, indent=2))
         return
 
+    if query != args.question:
+        print(f"\nsearched for: {query}")
     print(f"\n{a.text}\n")
     if a.refused:
         print(f"refused: {a.reason}")

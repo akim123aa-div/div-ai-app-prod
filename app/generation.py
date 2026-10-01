@@ -10,7 +10,17 @@ Three things from that lesson are load-bearing and all three are here:
 
 The prompts live in `app/prompts/*.md` rather than in this file. A prompt is
 edited far more often than the code around it, it is read by people who do not
-write Python, and it wants a diff of its own. Lesson 4 adds a version to it.
+write Python, and it wants a diff of its own.
+
+Lesson 4 adds three things, none of which changes a single-question answer's logic:
+
+* `history`, the conversation window from `memory.py`, placed between the system
+  prompt and the question, so a follow-up is answered knowing what came before
+* the injection guard: retrieved text wrapped in <document> tags, and a prompt
+  clause that says nothing inside them is an instruction (`GUARD_CONTEXT`)
+* `prompt_version()`, a hash of everything that shapes the answer apart from the
+  question and the context. The response cache keys on it, so editing a prompt
+  file retires every answer the old prompt wrote, without anyone remembering to.
 
 There are two ways to get an answer, and they share every step but one.
 `answer_question` waits for the whole reply; `stream_answer` yields it in
@@ -21,6 +31,7 @@ endpoints cannot drift apart.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import Iterator
@@ -59,6 +70,7 @@ class Answer:
     n_out: int = 0
     usd: float = 0.0
     seconds: float = 0.0
+    fallback: bool = False
 
     def to_dict(self) -> dict:
         return {"question": self.question, "answer": self.text,
@@ -68,6 +80,23 @@ class Answer:
                 "usd": round(self.usd, 6),
                 "seconds": round(self.seconds, 2),
                 "sources": [h.source for h in self.hits]}
+
+
+def system_prompt() -> str:
+    """The answer prompt, plus the injection clause when the guard is on."""
+    p = prompt("answer")
+    return f"{p}\n\n{prompt('guard')}" if settings.guard_context else p
+
+
+def prompt_version() -> str:
+    """A content hash, not a number someone bumps. If the words change, it changes."""
+    shape = system_prompt() + ("|guarded" if settings.guard_context else "|plain")
+    return hashlib.sha256(shape.encode()).hexdigest()[:10]
+
+
+def strip_markers(text: str) -> str:
+    """Remove [n] markers. In a past turn they point at blocks no longer in the window."""
+    return re.sub(r"\s*\[\d+\]", "", text)
 
 
 def build_context(hits: list[Hit]) -> str:
@@ -88,9 +117,18 @@ def build_context(hits: list[Hit]) -> str:
     unusual, which on a corpus of annual reports is the pages holding the
     numbers. If you want to cap what reaches the model, cap it in tokens, and
     Lesson 4 is where that budget gets built.
+
+    With the guard on (Lesson 4) each block is wrapped in <document> tags, so the
+    prompt can say where data starts and stops. A tag the data can forge is not
+    a boundary, so a closing tag inside a chunk is broken before it is sent.
     """
+    if not settings.guard_context:
+        return "\n\n".join(
+            f"[{j}] {h.source}\n{h.chunk['text'].strip()}"
+            for j, h in enumerate(hits, 1))
     return "\n\n".join(
-        f"[{j}] {h.source}\n{h.chunk['text'].strip()}"
+        f'<document index="{j}" source="{h.source}">\n'
+        f"{h.chunk['text'].strip().replace('</document', '</ document')}\n</document>"
         for j, h in enumerate(hits, 1))
 
 
@@ -125,8 +163,16 @@ def retrieve(question: str, top_k: int | None = None,
     return hits, ""
 
 
-def answer_messages(question: str, hits: list[Hit]) -> list[dict]:
-    return [{"role": "system", "content": prompt("answer")},
+def answer_messages(question: str, hits: list[Hit],
+                    history: list[dict] | None = None) -> list[dict]:
+    """System prompt, then the conversation so far, then the context and question.
+
+    The context goes with the newest question and nowhere else. Past turns are
+    sent as text only: their context blocks are not resent, which is most of
+    why a conversation's window grows by hundreds of tokens a turn, not thousands.
+    """
+    return [{"role": "system", "content": system_prompt()},
+            *(history or []),
             {"role": "user",
              "content": f"Context:\n{build_context(hits)}\n\nQuestion: {question}"}]
 
@@ -140,23 +186,23 @@ def finish(question: str, hits: list[Hit], c: Completion, t0: float) -> Answer:
                   refused=refused,
                   reason="the model found no support in the context" if refused else "",
                   model=c.model, n_in=c.n_in, n_out=c.n_out, usd=c.usd,
-                  seconds=time.perf_counter() - t0)
+                  seconds=time.perf_counter() - t0, fallback=c.fallback)
 
 
-def answer_question(question: str, top_k: int | None = None,
-                    gate: float | None = None) -> Answer:
+def answer_question(question: str, top_k: int | None = None, gate: float | None = None,
+                    history: list[dict] | None = None) -> Answer:
     """Retrieve, decide whether to answer at all, then answer."""
     t0 = time.perf_counter()
     hits, why = retrieve(question, top_k, gate)
     if why:
         return Answer(question=question, text=REFUSAL, hits=hits, refused=True,
                       reason=why, seconds=time.perf_counter() - t0)
-    c = get_client().complete(answer_messages(question, hits), max_tokens=220)
+    c = get_client().complete(answer_messages(question, hits, history), max_tokens=220)
     return finish(question, hits, c, t0)
 
 
-def stream_answer(question: str, top_k: int | None = None,
-                  gate: float | None = None) -> Iterator[str | Answer]:
+def stream_answer(question: str, top_k: int | None = None, gate: float | None = None,
+                  history: list[dict] | None = None) -> Iterator[str | Answer]:
     """The same answer, as text fragments while the model writes it, and then the
     finished `Answer`, with citations and cost, as the last item.
 
@@ -177,7 +223,7 @@ def stream_answer(question: str, top_k: int | None = None,
         return
 
     held, released, done = "", False, None
-    for x in get_client().stream(answer_messages(question, hits), max_tokens=220):
+    for x in get_client().stream(answer_messages(question, hits, history), max_tokens=220):
         if isinstance(x, Completion):
             done = x
         elif released:
@@ -194,14 +240,20 @@ def stream_answer(question: str, top_k: int | None = None,
     yield a
 
 
-def condense(turns: list[dict], question: str) -> str:
-    """Rewrite a follow-up as a standalone query. Unused until Lesson 4, which is
-    when the application starts owning a conversation. Here so that the pipeline
-    that arrives in Lesson 3 is already the whole pipeline."""
+def condense(turns: list[dict], question: str) -> tuple[str, Completion | None]:
+    """Rewrite a follow-up as a standalone query, the GenAI Lesson 16 step.
+
+    The retriever sees one string and no conversation, so "and the year before?"
+    has to become "Aurora Innovation patents at year end 2021" before it gets
+    there. `turns` is the window from `memory.py`: its summary, then the recent
+    turns. Returns the query and the call that made it, for the accounting; no
+    history means no call, and the question goes through as it is.
+    """
     if not turns:
-        return question
+        return question, None
     history = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
-    return get_client().complete(
+    c = get_client().complete(
         [{"role": "system", "content": prompt("condense")},
          {"role": "user", "content": f"{history}\nuser: {question}\n\nStandalone query:"}],
-        max_tokens=60).text.strip().strip('"')
+        max_tokens=60)
+    return (c.text.strip().strip('"') or question), c

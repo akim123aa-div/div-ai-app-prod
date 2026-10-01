@@ -27,7 +27,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key.
 
 ```bash
 git clone <this repo> && cd reference_app
-git checkout m9-l3
+git checkout m9-l4
 
 cp .env.example .env          # then put your key in it
 uv sync --all-groups          # creates .venv from pyproject.toml
@@ -45,8 +45,9 @@ new ones. Nothing in the code needs to know.
 ```bash
 python -m app.ingest                       # parse, chunk, write Postgres, index Qdrant. A few minutes.
 python -m app.ask "How many patents did Aurora Innovation hold at year end?"
+python -m app.ask --conversation 12 "And the year before?"   # a follow-up, condensed against the history
 python -m app.reindex                      # drop the vector index, rebuild it from Postgres
-python scripts/eval_golden.py --label m9-l3
+python scripts/eval_golden.py --label m9-l4
 ```
 
 Run these from the repository root. The first `ingest` downloads two small
@@ -76,7 +77,8 @@ open http://localhost:8000/docs            # every route, with a "Try it out" bu
 | `POST /chat` | one question, the whole answer as JSON |
 | `POST /chat/stream` | the same answer as server-sent events: `delta`*, `citations`, `usage`, `done`, or `error` |
 | `GET /conversations`, `GET /conversations/{id}` | what was asked and answered, from Postgres |
-| `GET /health` | what is being searched, and what startup cost |
+| `GET /usage` | what the caller has spent of their token budget (Lesson 4) |
+| `GET /health` | what is being searched, what startup cost, the prompt version and the fallback |
 
 Uploaded PDFs are kept in `data/uploads/` and get their ID from the filename, so
 uploading the same file again replaces it. The embedder, the reranker and BM25 are
@@ -85,6 +87,39 @@ start marks it `failed`, because background tasks live in the API process.
 
 Coming from `m9-l2`? Run `uv sync --all-groups` (three new dependencies). The
 database needs nothing: the tables did not change.
+
+## Conversations and guardrails
+
+From `m9-l4` a chat request is one turn of a conversation, and `app/conversation.py`
+runs it: load the window, condense the follow-up, look in the cache, answer, record.
+Every request names its user in an `X-User-Id` header (missing means `anonymous`).
+That header is a label, not authentication.
+
+| control | where | setting | what you see |
+|---|---|---|---|
+| conversation memory | `memory.py` | `HISTORY_TOKENS`, `SUMMARY_TOKENS` | older turns folded into a summary in `summaries`; `window` in every response |
+| per-user budget | `budget.py` | `USER_DAILY_TOKENS` | `429` with `Retry-After` before any work; `GET /usage` |
+| response cache | `cache.py` | `CACHE_ANSWERS` | `cached: true`, no tokens, no retrieval; rows in `answer_cache` |
+| fallback provider | `llm.py` | `FALLBACK_BASE`, `FALLBACK_MODEL`, `FALLBACK_API_KEY`, `PRIMARY_TIMEOUT`, `PRIMARY_RETRIES` | `usage.model` names the fallback; a warning in the log |
+| injection guard | `generation.py`, `prompts/guard.md` | `GUARD_CONTEXT` | context blocks in `<document>` tags; a new `prompt_version` |
+
+The cache key is the standalone query, the retriever's corpus fingerprint, a hash of
+the prompt files, the model and `top_k`. Answers from the fallback and refusals from
+the retrieval gate are never cached. A conversation started by one user is a 404 to
+any other.
+
+The fallback is Gemini through its OpenAI-shaped endpoint, the GenAI Lesson 7 second
+provider. Leave `FALLBACK_API_KEY` empty to run without one. Lesson 7 points it at
+Ollama instead.
+
+The guard stops a plain instruction planted in an uploaded PDF and does not stop a
+better-written one; the Lesson 4 notebook measures both. It is the minimum, not a
+defence you can rely on.
+
+Coming from `m9-l3`? No new dependencies. Copy the new block from `.env.example`
+into your `.env` and add a Gemini key. The two new tables are created when the
+server starts. Postgres needs nothing else, and the corpus does not need ingesting
+again: the chunker fix in this tag only changes documents of one or two pages.
 
 ## Layout
 
@@ -100,13 +135,18 @@ app/
   ingestion.py    PDFs -> Postgres rows -> Qdrant points
   retrieval.py    dense + BM25 + fusion + rerank          (GenAI Lesson 15)
   generation.py   context blocks, citations, refusal      (GenAI Lesson 16)
-  prompts/        prompts are files, not string literals
+  memory.py       the conversation window: summary + recent turns, under a budget  (Lesson 4)
+  budget.py       per-user token budgets                  (Lesson 4)
+  cache.py        the response cache and its key          (Lesson 4)
+  conversation.py one turn: window, condense, cache, answer, record                 (Lesson 4)
+  prompts/        prompts are files, not string literals: answer, condense, guard, summarise
   api/            the HTTP layer: routers, schemas, startup  (Lesson 3)
     main.py         the app, lifespan, /health, error mapping
     schemas.py      every request and response body, and the SSE events
     documents.py    upload -> background job -> poll
     chat.py         /chat and /chat/stream
     conversations.py
+    usage.py        what a user has spent              (Lesson 4)
   ingest.py       entry point: python -m app.ingest
   ask.py          entry point: python -m app.ask "..."
   reindex.py      entry point: python -m app.reindex
@@ -124,21 +164,23 @@ compose.yml       Postgres and Qdrant. Lesson 6 adds the rest of the stack.
 Postgres tables, created by `create_all` on first run:
   documents       one row per PDF; pending -> ready | failed
   chunks          the text that is searched and cited; id = "doc#pN#i"
-  conversations   a thread of turns; user_id is empty until Lesson 4
-  messages        each turn, with citations (JSON), tokens and cost
+  conversations   a thread of turns, owned by the X-User-Id that started it
+  messages        each turn, with citations (JSON), tokens and cost of the whole turn
+  summaries       the older turns of a conversation, folded   (Lesson 4, derived)
+  answer_cache    answers already paid for, by key           (Lesson 4, derived)
 ```
 
 ## The scorecard
 
 Forty questions, twenty-seven of them answerable, ten documents.
 
-| metric | `m9-l1` | `m9-l2` | `m9-l3` |
-|---|---|---|---|
-| hit@5 | 0.963 | 0.963 | 0.963 |
-| answer accuracy | 0.852 | 0.852 | 0.852 |
-| false answers on the unanswerable | 0.000 | 0.000 | 0.000 |
-| answers carrying a citation | 0.889 | 0.889 | 0.889 |
-| cost for the whole set | $0.024 | $0.010 | $0.010 |
+| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` |
+|---|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 |
+| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 |
+| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 |
+| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 |
 
 `m9-l1` is the baseline. Every later lesson changes something underneath it,
 and the question each time is whether these numbers moved. At `m9-l2` the
@@ -150,3 +192,9 @@ neighbours' calls. `m9-l2` reads the cost from each call.
 At `m9-l3` nothing moved, question by question. The API is a transport; the
 pipeline behind it is the same functions, and the golden set still calls them
 in-process. Lesson 8 runs it over HTTP.
+
+At `m9-l4` the golden set still asks one question at a time, so memory and the
+cache are not on its path. The guard is: every prompt is about a hundred tokens
+longer and the context is in `<document>` tags. Accuracy, retrieval and refusals
+held. One question gained a citation (its answer is still wrong), and the cost
+rose by about a tenth.

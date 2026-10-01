@@ -59,6 +59,15 @@ class Usage(BaseModel):
     usd: float
 
 
+class WindowInfo(BaseModel):
+    """What this turn sent back of the conversation so far (Lesson 4)."""
+    summary_tokens: int = Field(description="the summary standing in for older turns")
+    recent_messages: int = Field(description="past messages sent in full")
+    folded_messages: int = Field(description="past messages present only in the summary")
+    tokens: int = Field(description="summary + recent: what HISTORY_TOKENS limits")
+    full_tokens: int = Field(description="what sending the whole history would have cost")
+
+
 class ChatResponse(BaseModel):
     conversation_id: int
     answer: str
@@ -67,6 +76,9 @@ class ChatResponse(BaseModel):
     citations: list[Citation]
     usage: Usage
     seconds: float
+    query: str = Field(description="the standalone query the retriever saw")
+    cached: bool = Field(description="served from the response cache, at no cost")
+    window: WindowInfo
 
 
 # ---- the streaming vocabulary: one model per SSE event name ------------------
@@ -83,9 +95,15 @@ class CitationsEvent(BaseModel):
 
 
 class DoneEvent(BaseModel):
-    """event: done. The turn is saved; the stream ends after this."""
+    """event: done. The turn is saved; the stream ends after this.
+
+    Lesson 4 added the last three fields. A client written against Lesson 3
+    ignores them, which is how a vocabulary grows without breaking anyone."""
     conversation_id: int
     seconds: float
+    query: str = ""
+    cached: bool = False
+    window: WindowInfo | None = None
 
 
 class ErrorEvent(BaseModel):
@@ -124,11 +142,25 @@ class ConversationOut(BaseModel):
     messages: list[MessageOut]
 
 
+# ---- budgets (Lesson 4) -------------------------------------------------------
+class BudgetOut(BaseModel):
+    user_id: str
+    limit: int = Field(description="tokens in + out allowed per window")
+    used: int
+    remaining: int
+    window_hours: int
+    reset_seconds: float = Field(description="until the oldest counted turn leaves the window")
+
+
 # ---- the service -------------------------------------------------------------
 class Health(BaseModel):
     status: Literal["ok"]
     pid: int = Field(description="the server's process ID, so a script can stop it")
     model: str
+    fallback_model: str | None = Field(description="tried when the primary fails")
+    prompt_version: str
+    corpus: str = Field(description="fingerprint of what the retriever can find")
+    guard_context: bool
     documents: dict[str, int] = Field(description="document count by status")
     chunks: int = Field(description="chunks the retriever is searching right now")
     points: int = Field(description="vectors in Qdrant")

@@ -88,11 +88,19 @@ def page_count(path: Path) -> int:
 
 
 def boilerplate(pages: list[str], share: float = 0.35) -> set[str]:
-    """Lines that appear on at least `share` of the pages of one document."""
+    """Lines that appear on at least `share` of the pages of one document, and on
+    two pages at the very least.
+
+    The second condition arrived in Lesson 4. Without it, a two-page upload has a
+    threshold of 0.7 pages, every line clears it, and every line under 90
+    characters was dropped as furniture: headings, short paragraphs, the last
+    line of every paragraph. The annual reports are long enough that it never
+    showed. A line that appears once is not furniture, however short the file.
+    """
     seen = collections.Counter(
         ln.strip() for pg in pages for ln in set(pg.splitlines())
         if 2 < len(ln.strip()) < 90)
-    return {ln for ln, n in seen.items() if n >= share * len(pages)}
+    return {ln for ln, n in seen.items() if n >= max(2, share * len(pages))}
 
 
 def strip_furniture(pages: list[str]) -> list[str]:

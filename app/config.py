@@ -54,6 +54,30 @@ class Settings(BaseSettings):
     api_url: str = "http://localhost:8000"
     max_upload_mb: int = 50
 
+    # the conversation (Lesson 4). Tokens of past turns allowed back into the
+    # window, and a cap on the summary that stands in for the turns that left it.
+    # The summary also never takes more than a quarter of HISTORY_TOKENS.
+    history_tokens: int = 1200
+    summary_tokens: int = 200
+
+    # what one user may spend, in tokens in + out, over a rolling 24 hours.
+    # Keyed on the X-User-Id header, which is a name, not a proof of identity.
+    user_daily_tokens: int = 50_000
+
+    # the response cache, and the injection defence on retrieved text
+    cache_answers: bool = True
+    guard_context: bool = True
+
+    # the fallback provider, tried when the primary fails or times out. Any
+    # OpenAI-shaped endpoint will do; Lesson 7 points it at Ollama. Empty key and
+    # empty model mean no fallback. The primary gets a short leash so that an
+    # outage costs seconds before the fallback runs, not minutes of retries.
+    fallback_base: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    fallback_model: str = "gemini-2.5-flash-lite"
+    fallback_api_key: str = ""
+    primary_timeout: float = 20.0
+    primary_retries: int = 1
+
     # paths and noise
     corpus_dir: str = "data/pdfs"
     upload_dir: str = "data/uploads"

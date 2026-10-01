@@ -6,8 +6,10 @@ new is only where it lives. `import course_utils` worked because the file sat
 next to the notebook; `from app.llm import chat` works from anywhere, including
 from a container, a test, and the API's request handlers.
 
-Lesson 4 adds a fallback provider here. Lesson 7 points `base_url` at Ollama.
-Neither of those is a rewrite, which is the reason the transport is one module.
+Lesson 4 adds a fallback provider here: `FallbackClient` holds two clients and
+offers the same two methods, so nothing that calls `get_client()` changed. Lesson 7
+points the fallback's `base_url` at Ollama. Neither is a rewrite, which is the
+reason the transport is one module.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ PRICES = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-5-nano": (0.05, 0.40),
     "gpt-5-mini": (0.25, 2.00),
+    "gemini-2.5-flash-lite": (0.10, 0.40),
 }
 
 RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
@@ -78,6 +81,7 @@ class Completion:
     n_out: int
     seconds: float
     usd: float
+    fallback: bool = False          # written by the fallback provider (Lesson 4)
     raw: dict = field(repr=False, default_factory=dict)
 
 
@@ -195,14 +199,79 @@ class LLMClient:
         yield c
 
 
-_client: LLMClient | None = None
+class FallbackClient:
+    """Two clients behind the interface of one. The second runs when the first fails.
+
+    Retries and a fallback answer different failures. A retry waits out a blip:
+    one 503, one dropped connection. A fallback routes around an outage, where
+    waiting longer only makes the user wait longer. So the primary is built with
+    one retry and a short timeout (`PRIMARY_RETRIES`, `PRIMARY_TIMEOUT`), and any
+    `LLMError` it still raises sends the call to the secondary. That includes the
+    fatal ones: a revoked key or an exhausted quota belongs to one provider's
+    account, and the other provider has its own.
+
+    A stream can only fall back before its first fragment. After that the user
+    has read half an answer from one model, and the other would start again.
+    """
+
+    def __init__(self, primary: LLMClient, secondary: LLMClient):
+        self.primary, self.secondary = primary, secondary
+        self.model = primary.model              # the model the application asks for
+        self.fallbacks = 0                      # how often the secondary has answered
+
+    def __repr__(self):
+        return f"<FallbackClient {self.primary!r} -> {self.secondary!r}>"
+
+    def _falling_back(self, e: LLMError) -> None:
+        self.fallbacks += 1
+        log.warning("primary %s failed (%s); falling back to %s",
+                    self.primary.model, str(e)[:120], self.secondary.model)
+
+    def complete(self, messages, **kw) -> Completion:
+        try:
+            return self.primary.complete(messages, **kw)
+        except LLMError as e:
+            self._falling_back(e)
+        c = self.secondary.complete(messages, **kw)
+        c.fallback = True
+        return c
+
+    def stream(self, messages, **kw):
+        started = False
+        try:
+            for x in self.primary.stream(messages, **kw):
+                started = True
+                yield x
+            return
+        except LLMError as e:
+            if started:                         # half an answer is out; nothing to do
+                raise
+            self._falling_back(e)
+        for x in self.secondary.stream(messages, **kw):
+            if isinstance(x, Completion):
+                x.fallback = True
+            yield x
 
 
-def get_client() -> LLMClient:
+_client: LLMClient | FallbackClient | None = None
+
+
+def build_client() -> LLMClient | FallbackClient:
+    """The primary from `.env`, wrapped in a fallback if one is configured."""
+    if not (settings.fallback_model and settings.fallback_api_key):
+        return LLMClient()
+    primary = LLMClient(timeout=(3.0, settings.primary_timeout),
+                        max_retries=settings.primary_retries)
+    secondary = LLMClient(base_url=settings.fallback_base,
+                          api_key=settings.fallback_api_key, model=settings.fallback_model)
+    return FallbackClient(primary, secondary)
+
+
+def get_client() -> LLMClient | FallbackClient:
     """One client per process, because a new one means a new connection pool."""
     global _client
     if _client is None:
-        _client = LLMClient()
+        _client = build_client()
     return _client
 
 
