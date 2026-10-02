@@ -1,0 +1,18 @@
+# What `docker build` does not send to the builder. The build context is the whole
+# repository, so without this file it would ship .venv (about 2 GB of the host's
+# own environment, built for the host) and .env (the keys) to every build.
+#
+# Both Dockerfiles copy only what they name, so nothing below could reach an image
+# anyway. This file keeps it out of the build context too, which keeps builds fast
+# and keeps the keys out of the builder.
+
+.env
+.venv/
+.git/
+**/__pycache__/
+**/*.pyc
+.ipynb_checkpoints/
+
+# Data is not code. The corpus is mounted by compose, uploads and model weights
+# live on volumes, and runs are this machine's history.
+data/

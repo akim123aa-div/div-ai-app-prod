@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="docchat",
-    version="m9-l5",
+    version="m9-l6",
     summary="Grounded answers over uploaded PDFs, with citations. Module 9 reference app.",
     lifespan=lifespan,
 )

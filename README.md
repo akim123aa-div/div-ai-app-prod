@@ -27,7 +27,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key.
 
 ```bash
 git clone <this repo> && cd reference_app
-git checkout m9-l5
+git checkout m9-l6
 
 cp .env.example .env          # then put your key in it
 uv sync --all-groups          # creates .venv from pyproject.toml
@@ -37,8 +37,11 @@ docker compose up -d postgres qdrant
 ```
 
 If port 5432 or 6333 is already taken on your machine, change `POSTGRES_PORT`
-and `QDRANT_PORT` in `.env` and point `DATABASE_URL` and `QDRANT_URL` at the
-new ones. Nothing in the code needs to know.
+and `QDRANT_PORT` in `.env`. From `m9-l6` the two URLs are built from them, so
+that is the whole change. Nothing in the code needs to know.
+
+Or skip the virtual environment altogether and run everything in containers: see
+[Containers](#containers).
 
 ## Running it
 
@@ -47,7 +50,7 @@ python -m app.ingest                       # parse, chunk, write Postgres, index
 python -m app.ask "How many patents did Aurora Innovation hold at year end?"
 python -m app.ask --conversation 12 "And the year before?"   # a follow-up, condensed against the history
 python -m app.reindex                      # drop the vector index, rebuild it from Postgres
-python scripts/eval_golden.py --label m9-l5
+python scripts/eval_golden.py --label m9-l6
 ```
 
 Run these from the repository root. The first `ingest` downloads two small
@@ -161,6 +164,77 @@ their own: they are ingested inside the API process, so they log to the first on
 Coming from `m9-l4`? Run `uv sync --all-groups` (Streamlit is new). Nothing else: no
 tables changed, and the corpus does not need ingesting again.
 
+## Containers
+
+```bash
+cp .env.example .env                       # then put your key in it
+docker compose up -d --build               # postgres, qdrant, api, ui; the first build takes a few minutes
+open http://localhost:8501                 # the page; the API is still on http://localhost:8000
+```
+
+From `m9-l6` the whole application starts with one command. Postgres and Qdrant
+are the same two services as before; `api` and `ui` are built from this
+repository. Use one way of running the app at a time, because both want ports 8000
+and 8501.
+
+| file | what it is |
+|---|---|
+| `Dockerfile` | the API image: `python:3.12-slim`, uv, the locked dependencies, then the code. About 1.6 GB, almost all of it torch |
+| `ui/Dockerfile` | the UI image: the `ui` dependency group only. About 0.6 GB: no torch, no models, no keys |
+| `.dockerignore` | keeps `.venv`, `.env` and `data/` out of the build context |
+| `compose.yml` | the four services, their healthchecks, and four volumes |
+
+Inside compose, only configuration differs from the host. The API gets `.env` as its
+environment with a few values on top, set in `compose.yml`. The UI gets no `.env`
+at all, only `API_URL`, because it needs no key:
+
+| setting | on the host (`.env`) | inside compose |
+|---|---|---|
+| `DATABASE_URL` | `...@localhost:${POSTGRES_PORT}/...` | `...@postgres:5432/...` |
+| `QDRANT_URL` | `http://localhost:${QDRANT_PORT}` | `http://qdrant:6333` |
+| `API_HOST` | `127.0.0.1` | `0.0.0.0`, or nothing outside the container could reach it |
+| `API_URL`, for the UI | `http://localhost:8000` | `http://api:8000` |
+| `HF_HOME` | `~/.cache/huggingface` | `/models`, a volume |
+
+Data lives on volumes, not in images: `pgdata` and `qdrantdata` as before, `uploads`
+for uploaded PDFs, and `models` for the embedder and reranker weights, downloaded on
+the first start. The corpus in `data/pdfs` is mounted read-only. The API waits for
+Postgres and Qdrant to be healthy, and the UI waits for the API.
+
+A new stack starts empty. Load the ten reports with a one-off container, or upload a
+PDF from the page:
+
+```bash
+docker compose run --rm api python -m app.ingest      # a new container, same network and volumes, removed after
+docker compose logs -f api ui                         # Lesson 5's terminals, from every service at once
+docker compose stop api ui                            # back to the app on the host; the databases keep running
+docker compose down                                   # remove containers and the network; the volumes stay
+python scripts/clean_clone.py                         # the clean-clone test, below
+```
+
+The golden set runs inside the API's image the same way, with the script, the golden set
+and the runs directory mounted. `--user` makes the scorecard yours rather than root's:
+
+```bash
+docker compose run --rm --no-deps --user "$(id -u):$(id -g)" -e HF_HUB_OFFLINE=1 \
+  -v ./scripts:/app/scripts:ro -v ./data/golden:/app/data/golden:ro -v ./data/runs:/app/data/runs \
+  api python scripts/eval_golden.py --label m9-l6
+```
+
+The project name in `compose.yml` is still `m9-infra`, so a stack you ran in Lessons
+1 to 5 keeps its volumes and its corpus. Volume names come from the project name, so
+renaming it would start you with an empty stack.
+
+**The clean-clone test** clones the committed repository into a temporary directory,
+copies `.env`, runs `docker compose up` under a separate project name and free ports,
+uploads a PDF, asks about it, checks for a cited answer and a page, and removes
+everything it made. Uncommitted changes are not tested. The final project has to
+pass it.
+
+Coming from `m9-l5`? No new Python dependencies. Docker and about 3 GB of disk for
+the two images. Your `.env` still works as it is; the new `.env.example` writes the
+Postgres credentials once and builds both URLs from them, if you want to copy that.
+
 ## Layout
 
 ```
@@ -198,13 +272,17 @@ ui/               the Streamlit client: HTTP only, no `app` imports   (Lesson 5)
 scripts/
   eval_golden.py  the golden set, run as a script, writing a scorecard
   watch.sql       the newest rows, every second, for a psql terminal   (Lesson 5)
+  clean_clone.py  fresh clone, copy .env, compose up, upload, ask, tear down   (Lesson 6)
 data/
   pdfs/           the corpus: ten annual reports
   uploads/        PDFs uploaded through the API, gitignored
   corpus.json     which PDFs, and what each is called
   golden/         the 40-question golden set from GenAI Lesson 17
   runs/           scorecards, gitignored, one per run
-compose.yml       Postgres and Qdrant. Lesson 6 adds the rest of the stack.
+compose.yml       the whole stack: postgres, qdrant, api, ui, and their volumes   (Lesson 6)
+Dockerfile        the API image                                                    (Lesson 6)
+ui/Dockerfile     the UI image: the `ui` dependency group, nothing else            (Lesson 6)
+.dockerignore     what never reaches a build: .venv, .env, data/                   (Lesson 6)
 
 Postgres tables, created by `create_all` on first run:
   documents       one row per PDF; pending -> ready | failed
@@ -219,13 +297,13 @@ Postgres tables, created by `create_all` on first run:
 
 Forty questions, twenty-seven of them answerable, ten documents.
 
-| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` |
-|---|---|---|---|---|---|
-| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
-| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
-| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 |
-| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 |
+| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` | `m9-l6` |
+|---|---|---|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
+| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 | 0.926 |
+| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 | $0.011 |
 
 `m9-l1` is the baseline. Every later lesson changes something underneath it,
 and the question each time is whether these numbers moved. At `m9-l2` the
@@ -246,3 +324,7 @@ rose by about a tenth.
 
 At `m9-l5` nothing moved, question by question. No line of the pipeline changed:
 the UI is a client of the API, and the golden set does not go through either.
+
+At `m9-l6` the golden set ran inside the API's image, as a one-off container, against
+the same Postgres and Qdrant: a different Linux, Python 3.12.13 instead of 3.12.11, and
+every package installed fresh from the lockfile. Nothing moved, question by question.

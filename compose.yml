@@ -1,15 +1,22 @@
-# The two stateful services, and nothing else.
+# The whole application: two stateful services, the API and the UI.
 #
-# Lessons 1 to 5 run the application on your host and these in containers.
-# Lesson 6 opens this file line by line and then adds `api` and `ui` to it.
-# Until then it is infrastructure you use without having written it.
+#   docker compose up -d --build            # all four; the first build takes a few minutes
+#   docker compose up -d postgres qdrant    # just the databases, for the app on the host
 #
-#   docker compose up -d postgres qdrant
+# Lessons 1 to 5 ran the application on the host and only the databases here. From
+# Lesson 6 both ways work, and they differ only in configuration: on the host the
+# database is localhost:5432 (or whatever POSTGRES_PORT says), and inside this file
+# it is postgres:5432. Every service joins one network, `m9-infra_default`, where
+# each one is reachable by its service name.
 #
-# Host ports come from .env so that a machine already running a Postgres on 5432
-# does not have to argue with this file. Nothing else in here reads .env: the
-# values below are the container's own, and the application's copy of them lives
-# in .env as well. Lesson 6 is where that duplication gets removed.
+# Values come from .env twice over. Compose reads it to fill in the ${...} below,
+# and the API gets the whole file as its environment through `env_file`. The
+# `environment` block of a service wins over its `env_file`, and holds exactly
+# what is different inside the network.
+#
+# The project name is what every container, network and volume is named after.
+# It stayed `m9-infra` from Lesson 1 so that your volumes, and the corpus in them,
+# carry over. Rename it and compose starts you a fresh, empty set.
 
 name: m9-infra
 
@@ -17,15 +24,19 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_USER: docchat
-      POSTGRES_PASSWORD: docchat
-      POSTGRES_DB: docchat
+      # The credentials, read from .env. The API's DATABASE_URL below is built from
+      # the same three values, so they are written down in one place.
+      POSTGRES_USER: ${POSTGRES_USER:-docchat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docchat}
+      POSTGRES_DB: ${POSTGRES_DB:-docchat}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"   # host:container. The app is on the host, so it needs a host port.
+      - "${POSTGRES_PORT:-5432}:5432"   # host:container. Only for clients on the host: psql, the notebooks.
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U docchat"]
+      # "Running" means the process started. "Healthy" means it answers. The API
+      # needs the second, and pg_isready is how Postgres says so.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -37,7 +48,67 @@ services:
       - "${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrantdata:/qdrant/storage
+    healthcheck:
+      # The image has no curl, so bash opens the socket and asks /readyz itself.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /readyz HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .                            # ./Dockerfile; the image is called m9-infra-api
+    env_file: .env                      # the keys, the models, the retrieval numbers: everything in .env
+    environment:
+      # What changes inside the network. These win over the same names in .env.
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-docchat}:${POSTGRES_PASSWORD:-docchat}@postgres:5432/${POSTGRES_DB:-docchat}
+      QDRANT_URL: http://qdrant:6333
+      API_HOST: 0.0.0.0                 # listen on the container's network, not only inside it
+      API_PORT: "8000"                  # inside the container. The host port is below.
+      HF_HOME: /models                  # where Hugging Face keeps downloaded weights: a volume
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - uploads:/app/data/uploads       # uploaded PDFs outlive the container
+      - models:/models                  # ~200 MB of weights, downloaded once, not once per container
+      - ./data/pdfs:/app/data/pdfs:ro   # the corpus, for `docker compose run --rm api python -m app.ingest`
+      - ./data/corpus.json:/app/data/corpus.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy      # startup runs create_all, so Postgres must answer first
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      # /health answers once lifespan has loaded both models and built BM25. The first
+      # start downloads the models too, which is what start_period allows for.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: .                        # the repository: the Dockerfile needs pyproject.toml and uv.lock
+      dockerfile: ui/Dockerfile
+    environment:
+      # The one thing the UI knows. No env_file: the page needs no key, so it gets none.
+      API_URL: http://api:8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${UI_PORT:-8501}:8501"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   pgdata:
   qdrantdata:
+  uploads:
+  models:
