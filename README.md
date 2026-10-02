@@ -27,7 +27,7 @@ Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key.
 
 ```bash
 git clone <this repo> && cd reference_app
-git checkout m9-l4
+git checkout m9-l5
 
 cp .env.example .env          # then put your key in it
 uv sync --all-groups          # creates .venv from pyproject.toml
@@ -47,7 +47,7 @@ python -m app.ingest                       # parse, chunk, write Postgres, index
 python -m app.ask "How many patents did Aurora Innovation hold at year end?"
 python -m app.ask --conversation 12 "And the year before?"   # a follow-up, condensed against the history
 python -m app.reindex                      # drop the vector index, rebuild it from Postgres
-python scripts/eval_golden.py --label m9-l4
+python scripts/eval_golden.py --label m9-l5
 ```
 
 Run these from the repository root. The first `ingest` downloads two small
@@ -76,8 +76,9 @@ open http://localhost:8000/docs            # every route, with a "Try it out" bu
 | `DELETE /documents/{id}` | remove it from Postgres, Qdrant and the running retriever |
 | `POST /chat` | one question, the whole answer as JSON |
 | `POST /chat/stream` | the same answer as server-sent events: `delta`*, `citations`, `usage`, `done`, or `error` |
-| `GET /conversations`, `GET /conversations/{id}` | what was asked and answered, from Postgres |
+| `GET /conversations`, `GET /conversations/{id}` | the caller's conversations, from Postgres; another user's is a 404 (Lesson 5) |
 | `GET /usage` | what the caller has spent of their token budget (Lesson 4) |
+| `GET /chunks/{id}` | the passage behind a citation; encode the `#` in the ID as `%23` (Lesson 5) |
 | `GET /health` | what is being searched, what startup cost, the prompt version and the fallback |
 
 Uploaded PDFs are kept in `data/uploads/` and get their ID from the filename, so
@@ -121,6 +122,45 @@ into your `.env` and add a Gemini key. The two new tables are created when the
 server starts. Postgres needs nothing else, and the corpus does not need ingesting
 again: the chunker fix in this tag only changes documents of one or two pages.
 
+## The UI
+
+```bash
+python -m app.serve                        # the API, in one terminal
+streamlit run ui/app.py                    # the page, in another: http://localhost:8501
+```
+
+From `m9-l5` the application has a face: a Streamlit chat page in `ui/`. It is a
+client of the API and nothing more. It sends HTTP to `API_URL`, draws what comes back,
+and imports nothing from `app/`. It needs only the `ui` dependency group (Streamlit,
+httpx, python-dotenv), which is what lets Lesson 6 build its image without torch.
+
+| the page | what it calls |
+|---|---|
+| the chat, streamed | `POST /chat/stream`, events drawn as they arrive |
+| Sources under each answer | `GET /chunks/{id}` for each citation, cached for five minutes |
+| the sidebar: usage, conversations, documents | `GET /usage`, `GET /conversations`, `GET /documents`, on every rerun |
+| an upload and its status | `POST /documents`, then `GET /documents/{id}` once a second from a fragment |
+
+Refusals, a spent budget, someone else's conversation, a provider failing mid-answer
+and an API that is down each have a state of their own on the page. The user in the
+sidebar is sent as `X-User-Id`, and it is still a label, not a login.
+
+To watch a request go through the stack, give each process a terminal:
+
+```bash
+python -m app.serve                                    # each step of a turn, each ingestion stage
+streamlit run ui/app.py                                # each rerun, each call the page makes
+docker compose logs -f --since 1s qdrant               # each vector search and write
+docker compose exec -T postgres psql -U docchat < scripts/watch.sql
+```
+
+The last one refreshes the newest rows of `messages`, `documents` and `answer_cache`
+every second, because Postgres logs no queries by default. Uploads have no terminal of
+their own: they are ingested inside the API process, so they log to the first one.
+
+Coming from `m9-l4`? Run `uv sync --all-groups` (Streamlit is new). Nothing else: no
+tables changed, and the corpus does not need ingesting again.
+
 ## Layout
 
 ```
@@ -147,12 +187,17 @@ app/
     chat.py         /chat and /chat/stream
     conversations.py
     usage.py        what a user has spent              (Lesson 4)
+    chunks.py       the passage behind a citation      (Lesson 5)
   ingest.py       entry point: python -m app.ingest
   ask.py          entry point: python -m app.ask "..."
   reindex.py      entry point: python -m app.reindex
   serve.py        entry point: python -m app.serve
+ui/               the Streamlit client: HTTP only, no `app` imports   (Lesson 5)
+  client.py       every URL, header and status code the page uses, and an SSE parser
+  app.py          the page: session state, the chat, sources, upload status, the sidebar
 scripts/
   eval_golden.py  the golden set, run as a script, writing a scorecard
+  watch.sql       the newest rows, every second, for a psql terminal   (Lesson 5)
 data/
   pdfs/           the corpus: ten annual reports
   uploads/        PDFs uploaded through the API, gitignored
@@ -174,13 +219,13 @@ Postgres tables, created by `create_all` on first run:
 
 Forty questions, twenty-seven of them answerable, ten documents.
 
-| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` |
-|---|---|---|---|---|
-| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 |
-| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 |
-| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 |
-| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 |
-| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 |
+| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` |
+|---|---|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
+| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 |
+| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 |
 
 `m9-l1` is the baseline. Every later lesson changes something underneath it,
 and the question each time is whether these numbers moved. At `m9-l2` the
@@ -198,3 +243,6 @@ cache are not on its path. The guard is: every prompt is about a hundred tokens
 longer and the context is in `<document>` tags. Accuracy, retrieval and refusals
 held. One question gained a citation (its answer is still wrong), and the cost
 rose by about a tenth.
+
+At `m9-l5` nothing moved, question by question. No line of the pipeline changed:
+the UI is a client of the API, and the golden set does not go through either.

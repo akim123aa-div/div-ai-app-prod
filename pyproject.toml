@@ -29,6 +29,14 @@ notebook = [
     "pandas>=2.2",
     "httpx>=0.28",
 ]
+# The Lesson 5 client, and all it needs. It talks to the API over HTTP and never
+# imports `app`, so in Lesson 6 its image installs this group and nothing else:
+# no torch, no models, no database driver.
+ui = [
+    "httpx>=0.28",
+    "python-dotenv>=1.0",
+    "streamlit>=1.50",
+]
 
 [build-system]
 requires = ["hatchling"]

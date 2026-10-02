@@ -92,4 +92,6 @@ def rerank_scores(query: str, passages: list[str]) -> np.ndarray:
 
 
 def embedding_dim() -> int:
-    return int(get_embedder().get_sentence_embedding_dimension())
+    e = get_embedder()      # renamed in sentence-transformers 6; the old name warns
+    size = getattr(e, "get_embedding_dimension", None) or e.get_sentence_embedding_dimension
+    return int(size())

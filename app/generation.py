@@ -156,6 +156,8 @@ def retrieve(question: str, top_k: int | None = None,
     gate = settings.gate if gate is None else gate
     hits = get_retriever().retrieve(question, top_k=top_k)
     best = max((h.score for h in hits), default=0.0)
+    log.info("retrieved %d: %s", len(hits),
+             ", ".join(f"{h.chunk['doc']} p{h.chunk['page']} {h.score:.2f}" for h in hits))
     if best < gate:
         log.info("refused before generating: best reranker score %.3f < gate %.2f",
                  best, gate)

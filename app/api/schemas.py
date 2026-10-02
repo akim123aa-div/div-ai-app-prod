@@ -8,7 +8,8 @@ the `/docs` page is generated from these classes, and so is any client someone
 generates from `/openapi.json`.
 
 The event models at the bottom are the streaming chat vocabulary. Lesson 5's UI
-is written against them and against nothing else.
+is written against them and against nothing else: `ui/client.py` reads these
+field names, and no Python from this package.
 """
 
 from __future__ import annotations
@@ -29,6 +30,16 @@ class DocumentOut(BaseModel):
     error: str | None = None
     chunks: int
     created_at: datetime
+
+
+class ChunkOut(BaseModel):
+    """The passage a citation points at (Lesson 5's sources panel)."""
+    id: str
+    doc: str
+    title: str
+    page: int
+    section: str
+    text: str
 
 
 # ---- chat --------------------------------------------------------------------

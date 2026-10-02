@@ -217,6 +217,16 @@ def load_chunks(docs: list[str] | None = None, ready_only: bool = True) -> list[
                  "section": r.section, "text": r.text} for r in s.execute(q)]
 
 
+def get_chunk(chunk_id: str) -> dict | None:
+    """One chunk with its document's title: the passage behind a citation (Lesson 5)."""
+    q = (select(Chunk.id, Chunk.document_id.label("doc"), Document.title, Chunk.page,
+                Chunk.section, Chunk.text)
+         .join(Document).where(Chunk.id == chunk_id))
+    with session() as s:
+        r = s.execute(q).first()
+        return dict(r._mapping) if r else None
+
+
 def count_chunks() -> int:
     with session() as s:
         return s.scalar(select(func.count()).select_from(Chunk)) or 0
@@ -402,13 +412,18 @@ def cache_clear() -> int:
         return s.execute(delete(CacheEntry)).rowcount
 
 
-def list_conversations(limit: int = 20) -> list[dict]:
-    """Newest first, with a message count and what the conversation has cost."""
+def list_conversations(limit: int = 20, user_id: str | None = None) -> list[dict]:
+    """Newest first, with a message count and what the conversation has cost.
+
+    `user_id` keeps one user's conversations (Lesson 5's sidebar). None lists
+    everyone's, which only the notebooks and the command line should want."""
     q = (select(Conversation.id, Conversation.user_id, Conversation.title,
                 Conversation.created_at, func.count(Message.id).label("messages"),
                 func.coalesce(func.sum(Message.usd), 0.0).label("usd"))
          .outerjoin(Message).group_by(Conversation.id)
          .order_by(Conversation.id.desc()).limit(limit))
+    if user_id is not None:
+        q = q.where(Conversation.user_id == user_id)
     with session() as s:
         return [dict(r._mapping) for r in s.execute(q)]
 

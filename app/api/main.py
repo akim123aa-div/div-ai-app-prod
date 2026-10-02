@@ -1,4 +1,4 @@
-"""The FastAPI app: startup, four routers, a health check, and error mapping.
+"""The FastAPI app: startup, the routers, a health check, and error mapping.
 
     python -m app.serve                      # or: uvicorn app.api.main:app
     open http://localhost:8000/docs
@@ -30,7 +30,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app import db, index
-from app.api import chat, conversations, documents, usage
+from app.api import chat, chunks, conversations, documents, usage
 from app.api.schemas import Health
 from app.config import settings
 from app.generation import prompt_version
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="docchat",
-    version="m9-l4",
+    version="m9-l5",
     summary="Grounded answers over uploaded PDFs, with citations. Module 9 reference app.",
     lifespan=lifespan,
 )
@@ -72,6 +72,7 @@ app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(conversations.router)
 app.include_router(usage.router)
+app.include_router(chunks.router)
 
 
 @app.get("/health", response_model=Health, tags=["service"])

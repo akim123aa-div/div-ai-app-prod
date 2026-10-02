@@ -31,6 +31,9 @@ def setup_logging(level: str | None = None) -> None:
     # These two are chatty at INFO and have nothing to say that we want.
     logging.getLogger("httpx").setLevel("WARNING")
     logging.getLogger("sentence_transformers").setLevel("WARNING")
+    # pypdf warns about every malformed object it skips, which on a real PDF can be
+    # a hundred lines per upload. It recovers from them, so we only want its errors.
+    logging.getLogger("pypdf").setLevel("ERROR")
     _configured = True
 
 

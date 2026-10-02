@@ -120,9 +120,14 @@ def ingest_upload(doc: str, title: str, path: Path) -> None:
     from app.retrieval import refresh_retriever
 
     t0 = time.perf_counter()
+    log.info("upload %s: ingesting in the background", doc)
     try:
         n = store_document(doc, title, path=path, status="pending")
+        log.info("upload %s: %d chunks in Postgres after %.1fs; embedding them",
+                 doc, n, time.perf_counter() - t0)
         index_documents([doc])
+        log.info("upload %s: %d points in Qdrant after %.1fs; rebuilding BM25",
+                 doc, n, time.perf_counter() - t0)
         # The retriever holds every chunk in memory for BM25, built at startup. A
         # new document is invisible to it until it is rebuilt from the table, so
         # the rebuild comes before `ready`: ready means searchable.
@@ -133,7 +138,7 @@ def ingest_upload(doc: str, title: str, path: Path) -> None:
         index.delete_document(doc)
         db.set_status(doc, "failed", error=f"{type(e).__name__}: {e}"[:500])
         return
-    log.info("ingested upload %s: %d chunks in %.1fs", doc, n, time.perf_counter() - t0)
+    log.info("upload %s: ready, %d chunks in %.1fs", doc, n, time.perf_counter() - t0)
 
 
 def rebuild_index() -> dict:

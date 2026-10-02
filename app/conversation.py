@@ -21,6 +21,11 @@ call if this turn made one, and the answer. That total is what the budget sums.
 
 `answer_turn` and `stream_turn` share every step except generation, the same
 split that `generation.py` makes.
+
+Each step logs one line at INFO, so a terminal running `python -m app.serve`
+reads as the story of a turn: who asked, what the window held, what the
+question became, whether the cache answered, and what the turn cost. Lesson 5
+watches it live; Lesson 8 replaces it with a trace you can search.
 """
 
 from __future__ import annotations
@@ -32,6 +37,9 @@ from dataclasses import dataclass, field
 from app import cache, db, memory
 from app.generation import Answer, answer_question, condense, stream_answer
 from app.llm import Completion
+from app.logs import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -59,12 +67,25 @@ class Turn:
         return self.answer.usd + sum(c.usd for c in self.calls)
 
 
-def prepare(question: str, conversation_id: int | None, top_k: int | None):
+def prepare(question: str, conversation_id: int | None, user_id: str | None,
+            top_k: int | None):
     """Steps 1 to 3's inputs: the window, the standalone query, the cache key."""
+    log.info("turn: %s asks %r in conversation %s", user_id, question[:80],
+             conversation_id or "(new)")
     w = memory.window(conversation_id)
+    log.info("window: %d past messages + %d-token summary = %d tokens (all of it: %d)",
+             w.recent, w.summary_tokens, w.tokens, w.full_tokens)
     query, c = condense(w.messages, question)
+    if query != question:
+        log.info("condensed to %r", query[:100])
     calls = [x for x in (w.call, c) if x is not None]
     return w, query, calls, cache.key_parts(query, top_k)
+
+
+def lookup(parts: dict) -> dict | None:
+    hit = cache.lookup(parts)
+    log.info("cache %s", "hit: no retrieval, no model call" if hit else "miss")
+    return hit
 
 
 def from_cache(query: str, hit: dict) -> Answer:
@@ -79,6 +100,11 @@ def record(t: Turn, user_id: str | None) -> Turn:
         t.question, a.text, citations=a.citations, refused=a.refused, model=a.model,
         n_in=t.n_in, n_out=t.n_out, usd=t.usd,
         conversation_id=t.conversation_id, user_id=user_id)
+    outcome = (f"refused ({a.reason})" if a.refused
+               else f"answered, {len(a.citations)} citation(s)")
+    log.info("saved to conversation %d: %s, %d in / %d out, $%.5f, %.1fs%s",
+             t.conversation_id, outcome, t.n_in, t.n_out, t.usd, a.seconds,
+             ", from the cache" if t.cached else "")
     return t
 
 
@@ -86,8 +112,8 @@ def answer_turn(question: str, conversation_id: int | None = None,
                 user_id: str | None = None, top_k: int | None = None) -> Turn:
     """One turn, answered whole."""
     t0 = time.perf_counter()
-    w, query, calls, parts = prepare(question, conversation_id, top_k)
-    if hit := cache.lookup(parts):
+    w, query, calls, parts = prepare(question, conversation_id, user_id, top_k)
+    if hit := lookup(parts):
         a, cached = from_cache(query, hit), True
     else:
         a, cached = answer_question(query, top_k=top_k, history=w.messages), False
@@ -104,8 +130,8 @@ def stream_turn(question: str, conversation_id: int | None = None,
     A cache hit has no fragments to wait for, so its whole text goes out as one.
     """
     t0 = time.perf_counter()
-    w, query, calls, parts = prepare(question, conversation_id, top_k)
-    if hit := cache.lookup(parts):
+    w, query, calls, parts = prepare(question, conversation_id, user_id, top_k)
+    if hit := lookup(parts):
         a, cached = from_cache(query, hit), True
         if not a.refused:
             yield a.text

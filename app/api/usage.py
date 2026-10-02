@@ -1,7 +1,7 @@
 """/usage: what the caller has spent against their budget. Lesson 4.
 
 The same numbers the chat dependency checks, for a client to show before the
-user hits the limit rather than after. Lesson 5's UI puts them under the input.
+user hits the limit rather than after. Lesson 5's UI puts them in its sidebar.
 """
 
 from __future__ import annotations
