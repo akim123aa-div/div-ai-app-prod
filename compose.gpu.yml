@@ -1,0 +1,14 @@
+# The ollama service on an NVIDIA GPU (Lesson 7). An override, not part of compose.yml,
+# because on a machine without the GPU the device does not exist and the service would
+# not start. Use it by adding one line to .env:
+#
+#   COMPOSE_FILE=compose.yml:compose.gpu.yml
+#
+# It needs the NVIDIA driver, the NVIDIA container toolkit and its device list, written
+# once with `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`. Check it with
+# `docker compose logs ollama | grep "inference compute"`: it names the GPU, not "cpu".
+
+services:
+  ollama:
+    devices:
+      - nvidia.com/gpu=all

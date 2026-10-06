@@ -185,6 +185,7 @@ and 8501.
 | `ui/Dockerfile` | the UI image: the `ui` dependency group only. About 0.6 GB: no torch, no models, no keys |
 | `.dockerignore` | keeps `.venv`, `.env` and `data/` out of the build context |
 | `compose.yml` | the services, their healthchecks, and their volumes; `ollama` from Lesson 7 |
+| `compose.gpu.yml` | an override that gives `ollama` an NVIDIA GPU, used through `COMPOSE_FILE` in `.env` |
 
 Inside compose, only configuration differs from the host. The API gets `.env` as its
 environment with a few values on top, set in `compose.yml`. The UI gets no `.env`
@@ -266,7 +267,11 @@ The container runs on the CPU. Expect a minute or more for an answer on a laptop
 spent reading the 1,600-to-2,000-token prompt, not writing the answer. On a GPU it takes seconds. On a Mac, Docker cannot reach the GPU:
 install Ollama natively, which uses Metal, and change `FALLBACK_BASE` in the `api` service of
 `compose.yml` to `http://host.docker.internal:11434/v1`. With an NVIDIA GPU and the NVIDIA
-container toolkit, add `gpus: all` to the `ollama` service.
+container toolkit, add `COMPOSE_FILE=compose.yml:compose.gpu.yml` to `.env` and run
+`docker compose up -d`: the override hands the card to the `ollama` service.
+`docker compose logs ollama | grep "inference compute"` names the GPU when it worked. If it
+still says `cpu`, write the toolkit's device list once with
+`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
 
 To answer with nothing leaving the machine at all, make the local model the primary. That is
 configuration too:
