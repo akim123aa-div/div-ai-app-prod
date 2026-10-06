@@ -23,11 +23,13 @@ named in the module handbook next to what a production system would use instead.
 
 ## Setup
 
-Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key.
+Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key. From
+`m9-l7`, about 11 GB of disk for the model you run yourself: see
+[A model you run yourself](#a-model-you-run-yourself).
 
 ```bash
 git clone <this repo> && cd reference_app
-git checkout m9-l6
+git checkout m9-l7
 
 cp .env.example .env          # then put your key in it
 uv sync --all-groups          # creates .venv from pyproject.toml
@@ -104,7 +106,7 @@ That header is a label, not authentication.
 | conversation memory | `memory.py` | `HISTORY_TOKENS`, `SUMMARY_TOKENS` | older turns folded into a summary in `summaries`; `window` in every response |
 | per-user budget | `budget.py` | `USER_DAILY_TOKENS` | `429` with `Retry-After` before any work; `GET /usage` |
 | response cache | `cache.py` | `CACHE_ANSWERS` | `cached: true`, no tokens, no retrieval; rows in `answer_cache` |
-| fallback provider | `llm.py` | `FALLBACK_BASE`, `FALLBACK_MODEL`, `FALLBACK_API_KEY`, `PRIMARY_TIMEOUT`, `PRIMARY_RETRIES` | `usage.model` names the fallback; a warning in the log |
+| fallback provider | `llm.py` | `FALLBACK_BASE`, `FALLBACK_MODEL`, `FALLBACK_API_KEY`, `FALLBACK_TIMEOUT`, `PRIMARY_TIMEOUT`, `PRIMARY_RETRIES` | `usage.model` names the fallback; a warning in the log |
 | injection guard | `generation.py`, `prompts/guard.md` | `GUARD_CONTEXT` | context blocks in `<document>` tags; a new `prompt_version` |
 
 The cache key is the standalone query, the retriever's corpus fingerprint, a hash of
@@ -112,9 +114,9 @@ the prompt files, the model and `top_k`. Answers from the fallback and refusals 
 the retrieval gate are never cached. A conversation started by one user is a 404 to
 any other.
 
-The fallback is Gemini through its OpenAI-shaped endpoint, the GenAI Lesson 7 second
-provider. Leave `FALLBACK_API_KEY` empty to run without one. Lesson 7 points it at
-Ollama instead.
+At `m9-l4` the fallback was Gemini through its OpenAI-shaped endpoint, the GenAI Lesson 7
+second provider. From `m9-l7` it is a model in Ollama, in the same three settings. Leave
+`FALLBACK_API_KEY` empty to run without one.
 
 The guard stops a plain instruction planted in an uploaded PDF and does not stop a
 better-written one; the Lesson 4 notebook measures both. It is the minimum, not a
@@ -168,7 +170,7 @@ tables changed, and the corpus does not need ingesting again.
 
 ```bash
 cp .env.example .env                       # then put your key in it
-docker compose up -d --build               # postgres, qdrant, api, ui; the first build takes a few minutes
+docker compose up -d --build               # postgres, qdrant, api, ui, and from m9-l7 ollama; the first start takes minutes
 open http://localhost:8501                 # the page; the API is still on http://localhost:8000
 ```
 
@@ -182,7 +184,7 @@ and 8501.
 | `Dockerfile` | the API image: `python:3.12-slim`, uv, the locked dependencies, then the code. About 1.6 GB, almost all of it torch |
 | `ui/Dockerfile` | the UI image: the `ui` dependency group only. About 0.6 GB: no torch, no models, no keys |
 | `.dockerignore` | keeps `.venv`, `.env` and `data/` out of the build context |
-| `compose.yml` | the four services, their healthchecks, and four volumes |
+| `compose.yml` | the services, their healthchecks, and their volumes; `ollama` from Lesson 7 |
 
 Inside compose, only configuration differs from the host. The API gets `.env` as its
 environment with a few values on top, set in `compose.yml`. The UI gets no `.env`
@@ -235,6 +237,55 @@ Coming from `m9-l5`? No new Python dependencies. Docker and about 3 GB of disk f
 the two images. Your `.env` still works as it is; the new `.env.example` writes the
 Postgres credentials once and builds both URLs from them, if you want to copy that.
 
+## A model you run yourself
+
+```bash
+docker compose up -d --build                     # the first start also pulls OLLAMA_MODEL, about 2.5 GB
+docker compose exec ollama ollama pull qwen3:4b-instruct-2507-q8_0   # the 8-bit copy, for the Lesson 7 notebook
+docker compose exec ollama ollama list           # what is in the ollama volume
+docker compose logs ollama-pull                  # the download, if the API is still waiting for it
+```
+
+From `m9-l7` the stack runs a language model of its own: Qwen3 4B Instruct, at 4 bits, in
+[Ollama](https://ollama.com). It is the Lesson 4 fallback. When OpenAI fails, the API asks
+`http://ollama:11434/v1` instead, with the same client, and nothing leaves the machine.
+
+| service | what it is |
+|---|---|
+| `ollama` | the server: llama.cpp behind an OpenAI-shaped endpoint. Its weights are on the `ollama` volume. On the host it answers on `OLLAMA_PORT` |
+| `ollama-pull` | a one-shot job that downloads `OLLAMA_MODEL` and exits. The API waits for it to succeed, so a first start takes as long as the download |
+
+| setting | default | what it does |
+|---|---|---|
+| `OLLAMA_MODEL` | `qwen3:4b-instruct-2507-q4_K_M` | what `ollama-pull` downloads, and the fallback model inside compose. Empty means no download and no fallback |
+| `OLLAMA_PORT` | `11434` | the host port. Change it if an Ollama installed natively already has 11434 |
+| `OLLAMA_CONTEXT_LENGTH` | `4096` | the longest prompt Ollama reads. A longer one is cut from the front, silently |
+| `FALLBACK_TIMEOUT` | `300` | how long the fallback may take. On a CPU a RAG answer takes a minute or more |
+
+The container runs on the CPU. Expect a minute or more for an answer on a laptop, almost all of it
+spent reading the 1,600-to-2,000-token prompt, not writing the answer. On a GPU it takes seconds. On a Mac, Docker cannot reach the GPU:
+install Ollama natively, which uses Metal, and change `FALLBACK_BASE` in the `api` service of
+`compose.yml` to `http://host.docker.internal:11434/v1`. With an NVIDIA GPU and the NVIDIA
+container toolkit, add `gpus: all` to the `ollama` service.
+
+To answer with nothing leaving the machine at all, make the local model the primary. That is
+configuration too:
+
+```bash
+docker compose run --rm --no-deps -e OPENAI_BASE=http://ollama:11434/v1 -e OPENAI_API_KEY=ollama \
+  -e GEN_MODEL=qwen3:4b-instruct-2507-q4_K_M -e FALLBACK_API_KEY= \
+  api python -m app.ask --no-save "What was Albany International's effective tax rate for 2022?"
+```
+
+The clean-clone test sets `OLLAMA_MODEL` to nothing, so it starts the `ollama` service and
+downloads no model. The Ollama image is 4 GB on its own, because it carries GPU libraries
+whether or not it uses them.
+
+Coming from `m9-l6`? No new Python dependencies. Copy the two Lesson 7 blocks from
+`.env.example` into your `.env`. They replace the Gemini fallback, so keep your Gemini lines
+commented out if you want them back. Then run `docker compose up -d --build`. One Python setting
+is new, `FALLBACK_TIMEOUT`, and the pipeline did not change.
+
 ## Layout
 
 ```
@@ -280,6 +331,7 @@ data/
   golden/         the 40-question golden set from GenAI Lesson 17
   runs/           scorecards, gitignored, one per run
 compose.yml       the whole stack: postgres, qdrant, api, ui, and their volumes   (Lesson 6)
+                  and ollama, a model of our own, with a job that pulls it       (Lesson 7)
 Dockerfile        the API image                                                    (Lesson 6)
 ui/Dockerfile     the UI image: the `ui` dependency group, nothing else            (Lesson 6)
 .dockerignore     what never reaches a build: .venv, .env, data/                   (Lesson 6)
@@ -297,13 +349,13 @@ Postgres tables, created by `create_all` on first run:
 
 Forty questions, twenty-seven of them answerable, ten documents.
 
-| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` | `m9-l6` |
-|---|---|---|---|---|---|---|
-| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
-| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
-| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 | 0.926 |
-| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 | $0.011 |
+| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` | `m9-l6` | `m9-l7` |
+|---|---|---|---|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
+| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 | 0.926 | 0.926 |
+| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 | $0.011 | $0.011 |
 
 `m9-l1` is the baseline. Every later lesson changes something underneath it,
 and the question each time is whether these numbers moved. At `m9-l2` the
@@ -328,3 +380,23 @@ the UI is a client of the API, and the golden set does not go through either.
 At `m9-l6` the golden set ran inside the API's image, as a one-off container, against
 the same Postgres and Qdrant: a different Linux, Python 3.12.13 instead of 3.12.11, and
 every package installed fresh from the lockfile. Nothing moved, question by question.
+
+At `m9-l7` nothing moved, question by question. The primary is still gpt-4o-mini, and it did
+not fail during the run, so the new fallback was never asked. What an outage would cost is a
+separate scorecard: the same forty questions with Qwen3 4B in Ollama as the primary, and no
+fallback.
+
+| metric | gpt-4o-mini (`m9-l7`) | Qwen3 4B, 8-bit | Qwen3 4B, 4-bit |
+|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.889 | 0.778 |
+| false answers on the unanswerable | 0.000 | 0.077 | 0.000 |
+| answers carrying a citation | 0.926 | 0.926 | 0.889 |
+| cost for the whole set | $0.011 | $0 | $0 |
+
+Retrieval does not change, so hit@5 does not either. The 4-bit model, the one in compose, gets
+three answers fewer than gpt-4o-mini and makes no false answers. The 8-bit model gets one more
+answer than gpt-4o-mini and answers one question it should have refused. Twenty-seven
+answerable questions cannot rank the three more finely than that. These two runs are in
+`data/golden/m9-l7-local-*-scorecard.json`. They ran on a GPU, because on a laptop CPU each
+answer takes a minute or more.

@@ -20,6 +20,11 @@ too, so it removes those things by hand:
                       script that runs per visitor, and can fail on its first import
     7. compose down   -v: the volumes go too, and so do the images this project built
 
+From Lesson 7 the stack has a model of its own, and its first start downloads
+it, about 2.5 GB. The test sets OLLAMA_MODEL to nothing, so the ollama service
+starts and pulls nothing, and the API runs without a fallback. What it tests is
+that the stack starts; the fallback has its own section in the Lesson 7 notebook.
+
 The images build from the build cache your own `docker compose build` left, so a
 clone of the same code builds in seconds. Delete that cache and it takes minutes,
 which is the honest first-time number. The models are downloaded into the new
@@ -92,8 +97,8 @@ def main() -> int:
     # Shell variables win over .env when compose fills in ${...}, so these move the
     # host ports without touching the copied file.
     ports = {k: str(free_port()) for k in
-             ("POSTGRES_PORT", "QDRANT_PORT", "QDRANT_GRPC_PORT", "API_PORT", "UI_PORT")}
-    env = {**os.environ, **ports}
+             ("POSTGRES_PORT", "QDRANT_PORT", "QDRANT_GRPC_PORT", "API_PORT", "UI_PORT", "OLLAMA_PORT")}
+    env = {**os.environ, **ports, "OLLAMA_MODEL": ""}     # no 2.5 GB download, no fallback
     compose = ["docker", "compose", "-p", PROJECT]
     ok = False
     try:

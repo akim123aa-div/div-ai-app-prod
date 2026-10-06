@@ -262,8 +262,12 @@ def build_client() -> LLMClient | FallbackClient:
         return LLMClient()
     primary = LLMClient(timeout=(3.0, settings.primary_timeout),
                         max_retries=settings.primary_retries)
+    # The secondary is the last resort, so it gets a long read timeout and one retry.
+    # Retrying a model that is slow rather than down only queues a second copy of
+    # the same prompt behind the first.
     secondary = LLMClient(base_url=settings.fallback_base,
-                          api_key=settings.fallback_api_key, model=settings.fallback_model)
+                          api_key=settings.fallback_api_key, model=settings.fallback_model,
+                          timeout=(5.0, settings.fallback_timeout), max_retries=1)
     return FallbackClient(primary, secondary)
 
 

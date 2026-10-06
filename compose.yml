@@ -1,6 +1,7 @@
-# The whole application: two stateful services, the API and the UI.
+# The whole application: two stateful services, the API, the UI, and from Lesson 7 a
+# language model of our own, served by Ollama.
 #
-#   docker compose up -d --build            # all four; the first build takes a few minutes
+#   docker compose up -d --build            # everything; the first start downloads the model too
 #   docker compose up -d postgres qdrant    # just the databases, for the app on the host
 #
 # Lessons 1 to 5 ran the application on the host and only the databases here. From
@@ -65,6 +66,10 @@ services:
       API_HOST: 0.0.0.0                 # listen on the container's network, not only inside it
       API_PORT: "8000"                  # inside the container. The host port is below.
       HF_HOME: /models                  # where Hugging Face keeps downloaded weights: a volume
+      # The fallback (Lesson 4) is the model in the ollama service (Lesson 7). The same
+      # three settings pointed at Gemini before; the client is the same Lesson 7 client.
+      FALLBACK_BASE: http://ollama:11434/v1
+      FALLBACK_MODEL: ${OLLAMA_MODEL:-}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -77,6 +82,8 @@ services:
         condition: service_healthy      # startup runs create_all, so Postgres must answer first
       qdrant:
         condition: service_healthy
+      ollama-pull:
+        condition: service_completed_successfully   # a fallback that is still downloading is no fallback
     healthcheck:
       # /health answers once lifespan has loaded both models and built BM25. The first
       # start downloads the models too, which is what start_period allows for.
@@ -107,8 +114,45 @@ services:
       retries: 5
     restart: unless-stopped
 
+  ollama:
+    # llama.cpp behind an OpenAI-shaped HTTP endpoint, with a model manager in front.
+    # In a container it runs on the CPU. On a Mac that leaves the GPU unused: run Ollama
+    # natively there and set the api service's FALLBACK_BASE to http://host.docker.internal:11434/v1.
+    image: ollama/ollama:0.13.5         # pinned: a new Ollama can change how the same weights behave
+    environment:
+      # Ollama's own defaults are the two that bite in production. A prompt longer than
+      # the context is cut short without an error, and an idle model is unloaded, so
+      # the next request pays the load. Both are set here so they are visible.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-4096}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-5m}
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"   # for the notebook and curl on the host; the API uses ollama:11434
+    volumes:
+      - ollama:/root/.ollama            # the weights: gigabytes, downloaded once, like the models volume
+    healthcheck:
+      test: ["CMD", "ollama", "list"]   # the CLI asks the server, so this passes once it answers
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ollama-pull:
+    # A one-shot job: ask the server to download OLLAMA_MODEL, then exit. A model that is
+    # already in the volume costs a manifest check. An empty OLLAMA_MODEL pulls nothing,
+    # which is how the clean-clone test skips a 2.5 GB download it does not need.
+    image: ollama/ollama:0.13.5
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+    entrypoint: ["sh", "-c", "[ -z \"$$OLLAMA_MODEL\" ] || ollama pull \"$$OLLAMA_MODEL\""]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   pgdata:
   qdrantdata:
   uploads:
   models:
+  ollama:

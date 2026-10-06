@@ -69,12 +69,16 @@ class Settings(BaseSettings):
     guard_context: bool = True
 
     # the fallback provider, tried when the primary fails or times out. Any
-    # OpenAI-shaped endpoint will do; Lesson 7 points it at Ollama. Empty key and
-    # empty model mean no fallback. The primary gets a short leash so that an
-    # outage costs seconds before the fallback runs, not minutes of retries.
-    fallback_base: str = "https://generativelanguage.googleapis.com/v1beta/openai"
-    fallback_model: str = "gemini-2.5-flash-lite"
+    # OpenAI-shaped endpoint will do: Lesson 4 used Gemini, Lesson 7 a model in
+    # Ollama. Empty key and empty model mean no fallback. The primary gets a short
+    # leash so that an outage costs seconds before the fallback runs, not minutes
+    # of retries.
+    fallback_base: str = "http://localhost:11434/v1"
+    fallback_model: str = "qwen3:4b-instruct-2507-q4_K_M"
     fallback_api_key: str = ""
+    # A model on a CPU reads a 1,600-token prompt for a minute or more before it
+    # writes a word (Lesson 7), so the fallback's read timeout is its own setting.
+    fallback_timeout: float = 300.0
     primary_timeout: float = 20.0
     primary_retries: int = 1
 
