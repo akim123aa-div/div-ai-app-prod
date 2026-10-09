@@ -25,11 +25,12 @@ named in the module handbook next to what a production system would use instead.
 
 Prerequisites: [uv](https://docs.astral.sh/uv/), Docker, and an OpenAI API key. From
 `m9-l7`, about 11 GB of disk for the model you run yourself: see
-[A model you run yourself](#a-model-you-run-yourself).
+[A model you run yourself](#a-model-you-run-yourself). From `m9-l8`, about 4 GB more
+for Langfuse: see [Tests and traces](#tests-and-traces).
 
 ```bash
 git clone <this repo> && cd reference_app
-git checkout m9-l7
+git checkout m9-l8
 
 cp .env.example .env          # then put your key in it
 uv sync --all-groups          # creates .venv from pyproject.toml
@@ -53,6 +54,7 @@ python -m app.ask "How many patents did Aurora Innovation hold at year end?"
 python -m app.ask --conversation 12 "And the year before?"   # a follow-up, condensed against the history
 python -m app.reindex                      # drop the vector index, rebuild it from Postgres
 python scripts/eval_golden.py --label m9-l6
+python scripts/eval_golden.py --label m9-l8 --api http://localhost:8000   # the same, through the API
 ```
 
 Run these from the repository root. The first `ingest` downloads two small
@@ -170,7 +172,7 @@ tables changed, and the corpus does not need ingesting again.
 
 ```bash
 cp .env.example .env                       # then put your key in it
-docker compose up -d --build               # postgres, qdrant, api, ui, and from m9-l7 ollama; the first start takes minutes
+docker compose up -d --build               # postgres, qdrant, api, ui, from m9-l7 ollama, from m9-l8 langfuse; minutes the first time
 open http://localhost:8501                 # the page; the API is still on http://localhost:8000
 ```
 
@@ -184,7 +186,7 @@ and 8501.
 | `Dockerfile` | the API image: `python:3.12-slim`, uv, the locked dependencies, then the code. About 1.6 GB, almost all of it torch |
 | `ui/Dockerfile` | the UI image: the `ui` dependency group only. About 0.6 GB: no torch, no models, no keys |
 | `.dockerignore` | keeps `.venv`, `.env` and `data/` out of the build context |
-| `compose.yml` | the services, their healthchecks, and their volumes; `ollama` from Lesson 7 |
+| `compose.yml` | the services, their healthchecks, and their volumes; `ollama` from Lesson 7, Langfuse from Lesson 8 |
 | `compose.gpu.yml` | an override that gives `ollama` an NVIDIA GPU, used through `COMPOSE_FILE` in `.env` |
 
 Inside compose, only configuration differs from the host. The API gets `.env` as its
@@ -291,6 +293,75 @@ Coming from `m9-l6`? No new Python dependencies. Copy the two Lesson 7 blocks fr
 commented out if you want them back. Then run `docker compose up -d --build`. One Python setting
 is new, `FALLBACK_TIMEOUT`, and the pipeline did not change.
 
+## Tests and traces
+
+```bash
+uv sync --all-groups                             # pytest is new, in the `test` group
+pytest tests/unit                                # about a second; nothing needs to be running
+docker compose up -d postgres qdrant
+pytest tests/integration                         # about 20 seconds: the real API, a fake model
+pytest                                           # both
+
+docker compose up -d langfuse-web                # the traces, at http://localhost:3000
+python scripts/show_trace.py <trace_id>          # one trace as a tree, in the terminal
+python scripts/show_trace.py --session 812       # every turn of conversation 812
+```
+
+From `m9-l8` the application has tests and leaves traces.
+
+**The unit tests** cover the pieces whose output is decided by their input alone: the
+chunker, reciprocal rank fusion, the citation parser, the history budget, the retry
+decision, and the cache key. None of them touches a database, a model or the network.
+What they do not test is the model's wording, which no assertion can pin down.
+
+**The integration test** starts `python -m app.serve` on a free port against the real
+Postgres and Qdrant, with `OPENAI_BASE` pointed at a fake model in
+`tests/integration/fake_llm.py`. The fake answers the OpenAI-shaped route with the
+first sentence of context block [1], cited, so the test is free and the same every
+time. It uploads a PDF the test writes by hand, waits for `ready`, asks about it, and
+checks for a cited answer from that document, in JSON and as a stream. Then it deletes
+the document. Nothing in `app/` knows it is being tested.
+
+**The golden set over HTTP.** `--api` sends each question to `POST /chat`, as a new
+conversation from a user of its own (`golden-<label>-<id>`), so memory and the daily
+budget stay out of it. Each row of the scorecard keeps the `conversation_id` and the
+`trace_id` of its answer.
+
+**Traces** go to Langfuse, which runs in compose: the web app on `LANGFUSE_PORT`, a
+worker, ClickHouse, Redis and MinIO, and a database of its own on our Postgres, made by
+the one-shot `langfuse-db`. Its first start creates the project and the keys in
+`.env`, and a user to log in as (`LANGFUSE_USER_EMAIL`, `LANGFUSE_USER_PASSWORD`).
+Every turn is a trace whose steps are `window`, `condense`, `cache`, `answer`,
+`retrieve`, `rerank` and each `llm` call with its prompt, tokens and cost. It is named
+after the `X-User-Id` and the conversation, and `/chat` returns its `trace_id`.
+Leave `LANGFUSE_PUBLIC_KEY` empty and every decorator is a no-op; the tests run that
+way. The API does not wait for Langfuse: a tracer that is down loses traces, never
+answers.
+
+| setting | default | what it does |
+|---|---|---|
+| `RERANK` | `true` | the cross-encoder over the shortlist, and the refusal gate on its score. Off, the fused order stands and the gate is skipped |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` | `pk-lf-docchat`, `sk-lf-docchat` | the project's keys; Langfuse is created with them, the API sends with them |
+| `LANGFUSE_PORT` | `3000` | Langfuse's page on the host |
+| `LANGFUSE_BASE_URL` | `http://localhost:${LANGFUSE_PORT}` | where the app on the host sends traces; inside compose, `http://langfuse-web:3000` |
+
+The defaults for Langfuse's keys, passwords and secrets are for your own machine.
+Change every one of them before it runs anywhere else.
+
+**The bug Lesson 8 found.** Up to `m9-l7` the response cache's key held the query, the
+corpus, the prompt, the model and `top_k`, and nothing about retrieval. With `RERANK`
+off, the golden set over HTTP did not move, because every answer came from the cache;
+the trace of any one of them showed `cache: hit` and no `retrieve`. The key now holds
+the retrieval settings, and `tests/unit/test_cache.py` fails if one is left out. The
+commit before the tag, `m9-l8~1`, has the old key, and the Lesson 8 notebook runs it
+once to show the bug.
+
+Coming from `m9-l7`? Run `uv sync --all-groups` (langfuse, and pytest in a new `test`
+group). Copy the Lesson 8 blocks of `.env.example` into your `.env`: `RERANK`, and the
+`LANGFUSE_` lines. Then `docker compose up -d --build`, which pulls about 4 GB of
+images for Langfuse. The database needs nothing, and every cached answer is retired
+once, because the cache key gained a part.
+
 ## Layout
 
 ```
@@ -305,6 +376,7 @@ app/
   ingestion.py    PDFs -> Postgres rows -> Qdrant points
   retrieval.py    dense + BM25 + fusion + rerank          (GenAI Lesson 15)
   generation.py   context blocks, citations, refusal      (GenAI Lesson 16)
+  tracing.py      Langfuse: @observe, and what each step reports      (Lesson 8)
   memory.py       the conversation window: summary + recent turns, under a budget  (Lesson 4)
   budget.py       per-user token budgets                  (Lesson 4)
   cache.py        the response cache and its key          (Lesson 4)
@@ -326,9 +398,13 @@ ui/               the Streamlit client: HTTP only, no `app` imports   (Lesson 5)
   client.py       every URL, header and status code the page uses, and an SSE parser
   app.py          the page: session state, the chat, sources, upload status, the sidebar
 scripts/
-  eval_golden.py  the golden set, run as a script, writing a scorecard
+  eval_golden.py  the golden set, run as a script, writing a scorecard; --api over HTTP (Lesson 8)
+  show_trace.py   a trace from Langfuse as a tree                      (Lesson 8)
   watch.sql       the newest rows, every second, for a psql terminal   (Lesson 5)
   clean_clone.py  fresh clone, copy .env, compose up, upload, ask, tear down   (Lesson 6)
+tests/                                                                 (Lesson 8)
+  unit/           the deterministic pieces: chunker, fusion, citations, history, retries, cache key
+  integration/    the real API, Postgres and Qdrant, a fake model: upload, ask, a cited answer
 data/
   pdfs/           the corpus: ten annual reports
   uploads/        PDFs uploaded through the API, gitignored
@@ -337,6 +413,7 @@ data/
   runs/           scorecards, gitignored, one per run
 compose.yml       the whole stack: postgres, qdrant, api, ui, and their volumes   (Lesson 6)
                   and ollama, a model of our own, with a job that pulls it       (Lesson 7)
+                  and Langfuse, with ClickHouse, Redis and MinIO behind it       (Lesson 8)
 Dockerfile        the API image                                                    (Lesson 6)
 ui/Dockerfile     the UI image: the `ui` dependency group, nothing else            (Lesson 6)
 .dockerignore     what never reaches a build: .venv, .env, data/                   (Lesson 6)
@@ -354,13 +431,13 @@ Postgres tables, created by `create_all` on first run:
 
 Forty questions, twenty-seven of them answerable, ten documents.
 
-| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` | `m9-l6` | `m9-l7` |
-|---|---|---|---|---|---|---|---|
-| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
-| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
-| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
-| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 | 0.926 | 0.926 |
-| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 | $0.011 | $0.011 |
+| metric | `m9-l1` | `m9-l2` | `m9-l3` | `m9-l4` | `m9-l5` | `m9-l6` | `m9-l7` | `m9-l8` |
+|---|---|---|---|---|---|---|---|---|
+| hit@5 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 | 0.963 |
+| answer accuracy | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 | 0.852 |
+| false answers on the unanswerable | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 |
+| answers carrying a citation | 0.889 | 0.889 | 0.889 | 0.926 | 0.926 | 0.926 | 0.926 | 0.926 |
+| cost for the whole set | $0.024 | $0.010 | $0.010 | $0.011 | $0.011 | $0.011 | $0.011 | $0.011 |
 
 `m9-l1` is the baseline. Every later lesson changes something underneath it,
 and the question each time is whether these numbers moved. At `m9-l2` the
@@ -405,3 +482,24 @@ answer than gpt-4o-mini and answers one question it should have refused. Twenty-
 answerable questions cannot rank the three more finely than that. These two runs are in
 `data/golden/m9-l7-local-*-scorecard.json`. They ran on a GPU, because on a laptop CPU each
 answer takes a minute or more.
+
+At `m9-l8` the golden set ran through the API for the first time: forty `POST /chat`
+requests to the running stack, each a conversation of its own, through memory, the
+cache and the fallback. Nothing moved, question by question, against `m9-l7` in
+process. No answer came from the cache, because the cache key gained a part in this
+tag and every key was new.
+
+With `RERANK=false` the same run gives the number Lesson 8 goes looking for:
+
+| metric | `m9-l8` | `m9-l8`, reranker off |
+|---|---|---|
+| hit@5 | 0.963 | 0.852 |
+| answer accuracy | 0.852 | 0.778 |
+| false answers on the unanswerable | 0.000 | 0.000 |
+| answers carrying a citation | 0.926 | 0.889 |
+| cost for the whole set | $0.011 | $0.011 |
+
+Four questions lose the page their answer is on from the top five, and the model,
+still told to answer only from the context, refuses or answers with less. No false
+answers appear, though the gate is off with the reranker: on these forty questions
+the prompt's refusal clause holds on its own.

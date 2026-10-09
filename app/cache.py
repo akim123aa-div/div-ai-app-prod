@@ -16,6 +16,15 @@ for a reason that fits in a sentence:
     model           a different model writes a different answer, and you changed
                     model because you wanted that difference.
     top_k           more or fewer context blocks is a different context.
+    retrieval       the settings that choose those blocks: the reranker switch, its
+                    gate, the shortlist, and the two models. Added in Lesson 8.
+
+The last part was missing for four lessons, and nothing showed it. Lesson 8 turned
+the reranker off to watch the golden set drop, and the golden set did not move:
+every question was answered from the cache, by answers the reranker had chosen
+passages for. The trace showed it at once, a `cache: hit` and no `retrieve` step.
+A setting that changes which passages the model reads changes the answer, so it
+belongs in the key, and `tests/unit/test_cache.py` keeps it there.
 
 What is not in the key is a decision too. The conversation history is left out:
 the standalone query already carries what the history contributes to retrieval,
@@ -50,10 +59,17 @@ def normalise(query: str) -> str:
     return re.sub(r"\s+", " ", query.lower()).strip().rstrip("?.! ")
 
 
+def retrieval_settings() -> dict:
+    """Everything that decides which passages reach the model, apart from the corpus."""
+    return {"rerank": settings.rerank, "gate": settings.gate if settings.rerank else None,
+            "shortlist": settings.shortlist, "embed_model": settings.embed_model,
+            "rerank_model": settings.rerank_model if settings.rerank else None}
+
+
 def key_parts(query: str, top_k: int | None = None) -> dict:
     return {"query": normalise(query), "corpus": get_retriever().fingerprint,
             "prompt_version": prompt_version(), "model": get_client().model,
-            "top_k": top_k or settings.top_k}
+            "top_k": top_k or settings.top_k, "retrieval": retrieval_settings()}
 
 
 def make_key(parts: dict) -> str:
