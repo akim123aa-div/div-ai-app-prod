@@ -13,6 +13,12 @@ the vector index and looks them up here. The text lives in one store.
 request handler uses it. `refresh_retriever()` builds a new one from the table
 and swaps it in, which the API does after an upload finishes. A request already
 running keeps the retriever it started with; the next one gets the new one.
+
+Lesson 8 adds two things. `fuse` is a static method, because it needs nothing
+from the retriever, and a function that needs nothing can be tested with nothing:
+no database, no models, two dictionaries in and one out. And RERANK can switch
+the cross-encoder off, so the lesson can break retrieval on purpose and find out
+how the golden set and a trace each report it.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from app.db import load_chunks
 from app.index import count as index_count, search
 from app.logs import get_logger
 from app.models import embed_query, rerank_scores
+from app.tracing import observe
 
 log = get_logger(__name__)
 
@@ -98,7 +105,8 @@ class Retriever:
         scores = self.bm25.get_scores(tokenize(query))
         return {int(i): r for r, i in enumerate(np.argsort(-scores)[:k], 1)}
 
-    def fuse(self, *rankings: dict[int, int], k: int = 60) -> dict[int, float]:
+    @staticmethod
+    def fuse(*rankings: dict[int, int], k: int = 60) -> dict[int, float]:
         """Reciprocal rank fusion. Ranks combine; raw scores from two different
         scales do not, which is the whole reason RRF exists."""
         fused: dict[int, float] = {}
@@ -107,9 +115,19 @@ class Retriever:
                 fused[i] = fused.get(i, 0.0) + 1.0 / (k + rank)
         return fused
 
+    @observe(name="rerank", capture_input=False, capture_output=False)
+    def rerank(self, query: str, candidates: list[int]) -> np.ndarray:
+        """The cross-encoder's relevance, 0 to 1, for each chunk on the shortlist."""
+        return rerank_scores(query, [self.texts[i][:2400] for i in candidates])
+
     def retrieve(self, query: str, top_k: int | None = None,
                  shortlist: int | None = None) -> list[Hit]:
-        """The whole pipeline: fuse two rankings, rerank the shortlist, cut to k."""
+        """The whole pipeline: fuse two rankings, rerank the shortlist, cut to k.
+
+        With RERANK off the fused order stands, and each hit's score is its fusion
+        score. That is a different scale, around 0.03 rather than 0 to 1, and the
+        refusal gate in `generation.py` cannot be set on it, so it is skipped too.
+        """
         top_k = top_k or settings.top_k
         shortlist = shortlist or settings.shortlist
         if not self.chunks:
@@ -117,8 +135,9 @@ class Retriever:
 
         fused = self.fuse(self.dense(query, shortlist), self.lexical(query, shortlist))
         candidates = sorted(fused, key=lambda i: -fused[i])[:shortlist]
-        scores = rerank_scores(query, [self.texts[i][:2400] for i in candidates])
-        order = np.argsort(-scores)
+        scores = (self.rerank(query, candidates) if settings.rerank
+                  else np.array([fused[i] for i in candidates]))
+        order = np.argsort(-scores, kind="stable")
 
         return [Hit(chunk=self.chunks[candidates[j]], score=float(scores[j]),
                     fused=float(fused[candidates[j]])) for j in order[:top_k]]

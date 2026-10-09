@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     gate: float = 0.15
     chunk_tokens: int = 400
     chunk_overlap: int = 60
+    # The cross-encoder over the shortlist, and the refusal gate on its score. A
+    # switch, so that Lesson 8 can turn it off and watch what breaks.
+    rerank: bool = True
 
     # the API (Lesson 3). The server binds host:port; clients call api_url.
     # They are different values because in Lesson 6 the server binds 0.0.0.0
@@ -81,6 +84,11 @@ class Settings(BaseSettings):
     fallback_timeout: float = 300.0
     primary_timeout: float = 20.0
     primary_retries: int = 1
+
+    # traces (Lesson 8): Langfuse, self-hosted in compose. No public key, no tracing.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "http://localhost:3000"
 
     # paths and noise
     corpus_dir: str = "data/pdfs"

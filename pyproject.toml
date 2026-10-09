@@ -20,6 +20,7 @@ dependencies = [
     "fastapi>=0.135",
     "uvicorn>=0.32",
     "python-multipart>=0.0.20",
+    "langfuse>=4.17",
 ]
 
 [dependency-groups]
@@ -28,6 +29,12 @@ notebook = [
     "matplotlib>=3.9",
     "pandas>=2.2",
     "httpx>=0.28",
+]
+# Lesson 8's tests. Run on the host, never in an image: `pytest tests/unit` needs
+# nothing running, `pytest tests/integration` needs Postgres and Qdrant.
+test = [
+    "httpx>=0.28",
+    "pytest>=9.1",
 ]
 # The Lesson 5 client, and all it needs. It talks to the API over HTTP and never
 # imports `app`, so in Lesson 6 its image installs this group and nothing else:
@@ -44,6 +51,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 # Torch ships a CUDA build by default on Linux, which is about 2.5 GB.
 # Nothing in this module runs on a GPU, so we take the CPU wheels instead.

@@ -27,6 +27,10 @@ There are two ways to get an answer, and they share every step but one.
 fragments as the model writes it. Retrieval, the gate, the prompt and the
 citation parsing are the same functions in both, so the API's two chat
 endpoints cannot drift apart.
+
+Lesson 8 traces the three steps here, `answer`, `retrieve` and `condense`, and
+gives every `Answer` its `sources`: the passages it was written from, with their
+scores. The API returns them, so the golden set can score retrieval over HTTP.
 """
 
 from __future__ import annotations
@@ -38,10 +42,12 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 
+from app import tracing
 from app.config import ROOT, settings
 from app.llm import Completion, get_client
 from app.logs import get_logger
 from app.retrieval import Hit, get_retriever
+from app.tracing import observe
 
 log = get_logger(__name__)
 
@@ -62,6 +68,7 @@ class Answer:
     question: str
     text: str
     hits: list[Hit] = field(default_factory=list)
+    sources: list[dict] = field(default_factory=list)   # the hits, as plain data (Lesson 8)
     citations: list[dict] = field(default_factory=list)
     refused: bool = False
     reason: str = ""
@@ -79,7 +86,13 @@ class Answer:
                 "tokens": {"in": self.n_in, "out": self.n_out},
                 "usd": round(self.usd, 6),
                 "seconds": round(self.seconds, 2),
-                "sources": [h.source for h in self.hits]}
+                "sources": self.sources}
+
+
+def sources(hits: list[Hit]) -> list[dict]:
+    """The retrieved passages as plain data: what a response, a cache row or a trace holds."""
+    return [{"chunk_id": h.chunk["id"], "doc": h.chunk["doc"], "page": h.chunk["page"],
+             "source": h.source, "score": round(h.score, 3)} for h in hits]
 
 
 def system_prompt() -> str:
@@ -150,19 +163,27 @@ def resolve_citations(text: str, hits: list[Hit]) -> list[dict]:
     return out
 
 
+@observe(name="retrieve", as_type="retriever", capture_output=False)
 def retrieve(question: str, top_k: int | None = None,
              gate: float | None = None) -> tuple[list[Hit], str]:
-    """The hits, and a reason to refuse before generating ('' if there is none)."""
+    """The hits, and a reason to refuse before generating ('' if there is none).
+
+    The gate is the reranker's: with RERANK off there is no score it can judge, so
+    nothing is refused here and every question reaches the model.
+    """
     gate = settings.gate if gate is None else gate
     hits = get_retriever().retrieve(question, top_k=top_k)
     best = max((h.score for h in hits), default=0.0)
     log.info("retrieved %d: %s", len(hits),
              ", ".join(f"{h.chunk['doc']} p{h.chunk['page']} {h.score:.2f}" for h in hits))
-    if best < gate:
+    why = ""
+    if settings.rerank and best < gate:
         log.info("refused before generating: best reranker score %.3f < gate %.2f",
                  best, gate)
-        return hits, f"retrieval gate: best score {best:.3f} below {gate:.2f}"
-    return hits, ""
+        why = f"retrieval gate: best score {best:.3f} below {gate:.2f}"
+    tracing.output({"hits": sources(hits), "refused": why or None},
+                   rerank=settings.rerank, gate=gate if settings.rerank else None)
+    return hits, why
 
 
 def answer_messages(question: str, hits: list[Hit],
@@ -183,7 +204,8 @@ def finish(question: str, hits: list[Hit], c: Completion, t0: float) -> Answer:
     """The model's reply, checked for a refusal and its citations resolved."""
     text = c.text.strip()
     refused = text.startswith(REFUSAL)
-    return Answer(question=question, text=text, hits=hits,
+    tracing.output({"text": text, "refused": refused, "citations": CITE.findall(text)})
+    return Answer(question=question, text=text, hits=hits, sources=sources(hits),
                   citations=[] if refused else resolve_citations(text, hits),
                   refused=refused,
                   reason="the model found no support in the context" if refused else "",
@@ -191,18 +213,20 @@ def finish(question: str, hits: list[Hit], c: Completion, t0: float) -> Answer:
                   seconds=time.perf_counter() - t0, fallback=c.fallback)
 
 
+@observe(name="answer", capture_input=False, capture_output=False)
 def answer_question(question: str, top_k: int | None = None, gate: float | None = None,
                     history: list[dict] | None = None) -> Answer:
     """Retrieve, decide whether to answer at all, then answer."""
     t0 = time.perf_counter()
     hits, why = retrieve(question, top_k, gate)
     if why:
-        return Answer(question=question, text=REFUSAL, hits=hits, refused=True,
-                      reason=why, seconds=time.perf_counter() - t0)
+        return Answer(question=question, text=REFUSAL, hits=hits, sources=sources(hits),
+                      refused=True, reason=why, seconds=time.perf_counter() - t0)
     c = get_client().complete(answer_messages(question, hits, history), max_tokens=220)
     return finish(question, hits, c, t0)
 
 
+@observe(name="answer", capture_input=False, capture_output=False)
 def stream_answer(question: str, top_k: int | None = None, gate: float | None = None,
                   history: list[dict] | None = None) -> Iterator[str | Answer]:
     """The same answer, as text fragments while the model writes it, and then the
@@ -220,8 +244,8 @@ def stream_answer(question: str, top_k: int | None = None, gate: float | None = 
     t0 = time.perf_counter()
     hits, why = retrieve(question, top_k, gate)
     if why:
-        yield Answer(question=question, text=REFUSAL, hits=hits, refused=True,
-                     reason=why, seconds=time.perf_counter() - t0)
+        yield Answer(question=question, text=REFUSAL, hits=hits, sources=sources(hits),
+                     refused=True, reason=why, seconds=time.perf_counter() - t0)
         return
 
     held, released, done = "", False, None
@@ -242,6 +266,7 @@ def stream_answer(question: str, top_k: int | None = None, gate: float | None = 
     yield a
 
 
+@observe(name="condense", capture_output=False)
 def condense(turns: list[dict], question: str) -> tuple[str, Completion | None]:
     """Rewrite a follow-up as a standalone query, the GenAI Lesson 16 step.
 
@@ -252,10 +277,13 @@ def condense(turns: list[dict], question: str) -> tuple[str, Completion | None]:
     history means no call, and the question goes through as it is.
     """
     if not turns:
+        tracing.output(question, call="none: no history")
         return question, None
     history = "\n".join(f"{t['role']}: {t['content']}" for t in turns)
     c = get_client().complete(
         [{"role": "system", "content": prompt("condense")},
          {"role": "user", "content": f"{history}\nuser: {question}\n\nStandalone query:"}],
         max_tokens=60)
-    return (c.text.strip().strip('"') or question), c
+    query = c.text.strip().strip('"') or question
+    tracing.output(query)
+    return query, c

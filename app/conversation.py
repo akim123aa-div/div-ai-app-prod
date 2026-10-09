@@ -25,7 +25,12 @@ split that `generation.py` makes.
 Each step logs one line at INFO, so a terminal running `python -m app.serve`
 reads as the story of a turn: who asked, what the window held, what the
 question became, whether the cache answered, and what the turn cost. Lesson 5
-watches it live; Lesson 8 replaces it with a trace you can search.
+watches it live; Lesson 8 keeps it as a trace you can search.
+
+From Lesson 8 a turn is the root of a trace (`tracing.py`), named after its user
+and its conversation, and its trace ID goes back to the client with the answer.
+The log lines stay. They are for whoever is watching; the trace is for whoever
+comes looking afterwards.
 """
 
 from __future__ import annotations
@@ -34,10 +39,11 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from app import cache, db, memory
+from app import cache, db, memory, tracing
 from app.generation import Answer, answer_question, condense, stream_answer
 from app.llm import Completion
 from app.logs import get_logger
+from app.tracing import observe
 
 log = get_logger(__name__)
 
@@ -53,6 +59,7 @@ class Turn:
     cached: bool = False
     calls: list[Completion] = field(default_factory=list)   # condense, summarise
     conversation_id: int | None = None
+    trace_id: str | None = None                             # where to read it (Lesson 8)
 
     @property
     def n_in(self) -> int:
@@ -82,16 +89,19 @@ def prepare(question: str, conversation_id: int | None, user_id: str | None,
     return w, query, calls, cache.key_parts(query, top_k)
 
 
+@observe(name="cache", capture_output=False)
 def lookup(parts: dict) -> dict | None:
     hit = cache.lookup(parts)
     log.info("cache %s", "hit: no retrieval, no model call" if hit else "miss")
+    tracing.output("hit" if hit else "miss", key=cache.make_key(parts))
     return hit
 
 
 def from_cache(query: str, hit: dict) -> Answer:
     """A stored answer, as if it had just been written, at no cost."""
     return Answer(question=query, text=hit["text"], citations=hit["citations"],
-                  refused=hit["refused"], reason=hit["reason"], model=hit["model"])
+                  sources=hit.get("sources", []), refused=hit["refused"],
+                  reason=hit["reason"], model=hit["model"])
 
 
 def record(t: Turn, user_id: str | None) -> Turn:
@@ -100,6 +110,11 @@ def record(t: Turn, user_id: str | None) -> Turn:
         t.question, a.text, citations=a.citations, refused=a.refused, model=a.model,
         n_in=t.n_in, n_out=t.n_out, usd=t.usd,
         conversation_id=t.conversation_id, user_id=user_id)
+    t.trace_id = tracing.trace_id()
+    tracing.label_turn(user_id, t.conversation_id, {
+        "answer": a.text, "query": t.query, "cached": t.cached, "refused": a.refused,
+        "citations": [c["source"] for c in a.citations], "model": a.model,
+        "usd": round(t.usd, 6)})
     outcome = (f"refused ({a.reason})" if a.refused
                else f"answered, {len(a.citations)} citation(s)")
     log.info("saved to conversation %d: %s, %d in / %d out, $%.5f, %.1fs%s",
@@ -108,6 +123,7 @@ def record(t: Turn, user_id: str | None) -> Turn:
     return t
 
 
+@observe(name="turn", capture_output=False)
 def answer_turn(question: str, conversation_id: int | None = None,
                 user_id: str | None = None, top_k: int | None = None) -> Turn:
     """One turn, answered whole."""
@@ -122,6 +138,7 @@ def answer_turn(question: str, conversation_id: int | None = None,
     return record(Turn(question, query, a, w, cached, calls, conversation_id), user_id)
 
 
+@observe(name="turn", capture_output=False)
 def stream_turn(question: str, conversation_id: int | None = None,
                 user_id: str | None = None,
                 top_k: int | None = None) -> Iterator[str | Turn]:

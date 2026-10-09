@@ -17,7 +17,9 @@ What `lifespan` warms, and why each one is not left to the first request:
     first call   torch's own one-off setup, paid on a throwaway input
 
 The seconds each one took are returned by `GET /health`, so the notebook can
-show what a per-request load would have cost.
+show what a per-request load would have cost. On the way out, `lifespan` sends
+the traces still buffered (Lesson 8), so the last requests before a restart are
+not the ones that go missing.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app import db, index
+from app import db, index, tracing
 from app.api import chat, chunks, conversations, documents, usage
 from app.api.schemas import Health
 from app.config import settings
@@ -60,11 +62,12 @@ async def lifespan(app: FastAPI):
     log.info("ready in %.1fs: %s", sum(app.state.startup.values()), app.state.startup)
     yield                                    # the server runs here
     log.info("shutting down")
+    tracing.flush()
 
 
 app = FastAPI(
     title="docchat",
-    version="m9-l7",
+    version="m9-l8",
     summary="Grounded answers over uploaded PDFs, with citations. Module 9 reference app.",
     lifespan=lifespan,
 )
@@ -82,7 +85,8 @@ def health(request: Request) -> Health:
                   fallback_model=(settings.fallback_model
                                   if settings.fallback_api_key else None),
                   prompt_version=prompt_version(), corpus=get_retriever().fingerprint,
-                  guard_context=settings.guard_context,
+                  guard_context=settings.guard_context, rerank=settings.rerank,
+                  tracing=settings.langfuse_base_url if tracing.enabled else None,
                   documents=db.document_counts(),
                   chunks=len(get_retriever().chunks), points=index.count(),
                   startup_seconds=request.app.state.startup)

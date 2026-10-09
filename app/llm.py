@@ -10,6 +10,11 @@ Lesson 4 adds a fallback provider here: `FallbackClient` holds two clients and
 offers the same two methods, so nothing that calls `get_client()` changed. Lesson 7
 points the fallback's `base_url` at Ollama. Neither is a rewrite, which is the
 reason the transport is one module.
+
+Lesson 8 traces every call: each one is a `generation` in the request's trace,
+holding the whole prompt, the reply, the model, the tokens and the cost. A call
+that fails is marked as an error, so a fallback shows up as a red step followed
+by the one that answered.
 """
 
 from __future__ import annotations
@@ -21,8 +26,10 @@ from dataclasses import dataclass, field
 
 import requests
 
+from app import tracing
 from app.config import settings
 from app.logs import get_logger
+from app.tracing import observe
 
 log = get_logger(__name__)
 
@@ -133,6 +140,7 @@ class LLMClient:
         raise LLMRetryable("retries exhausted")     # unreachable, kept honest
 
     # ---- the two public methods -----------------------------------------
+    @observe(name="llm", as_type="generation", capture_input=False, capture_output=False)
     def complete(self, messages, max_tokens=300, temperature=0.0, **extra) -> Completion:
         if not self.api_key:
             raise LLMFatal("no API key; copy .env.example to .env and fill it in")
@@ -150,8 +158,11 @@ class LLMClient:
                        seconds=time.perf_counter() - t0, usd=usd, raw=d)
         log.info("llm %s  %d in / %d out  %.2fs  $%.5f",
                  c.model, c.n_in, c.n_out, c.seconds, c.usd)
+        tracing.generation(messages=messages, text=c.text, model=c.model, n_in=n_in,
+                           n_out=n_out, usd=usd, max_tokens=max_tokens, temperature=temperature)
         return c
 
+    @observe(name="llm", as_type="generation", capture_input=False, capture_output=False)
     def stream(self, messages, max_tokens=300, temperature=0.0, **extra):
         """Yield text fragments as they arrive, then one `Completion` for the whole.
 
@@ -196,6 +207,8 @@ class LLMClient:
                        n_out=n_out, seconds=time.perf_counter() - t0, usd=usd)
         log.info("llm %s stream  %d in / %d out  %.2fs  $%.5f",
                  c.model, c.n_in, c.n_out, c.seconds, c.usd)
+        tracing.generation(messages=messages, text=c.text, model=c.model, n_in=n_in,
+                           n_out=n_out, usd=usd, max_tokens=max_tokens, temperature=temperature)
         yield c
 
 
@@ -226,6 +239,7 @@ class FallbackClient:
         self.fallbacks += 1
         log.warning("primary %s failed (%s); falling back to %s",
                     self.primary.model, str(e)[:120], self.secondary.model)
+        tracing.output(level="WARNING", status=f"fell back to {self.secondary.model}")
 
     def complete(self, messages, **kw) -> Completion:
         try:

@@ -1,8 +1,10 @@
-# The whole application: two stateful services, the API, the UI, and from Lesson 7 a
-# language model of our own, served by Ollama.
+# The whole application: two stateful services, the API, the UI, from Lesson 7 a
+# language model of our own, served by Ollama, and from Lesson 8 Langfuse, where
+# every request leaves a trace.
 #
 #   docker compose up -d --build            # everything; the first start downloads the model too
 #   docker compose up -d postgres qdrant    # just the databases, for the app on the host
+#   docker compose up -d langfuse-web       # and the traces, for the app on the host (Lesson 8)
 #
 # Lessons 1 to 5 ran the application on the host and only the databases here. From
 # Lesson 6 both ways work, and they differ only in configuration: on the host the
@@ -20,6 +22,32 @@
 # carry over. Rename it and compose starts you a fresh, empty set.
 
 name: m9-infra
+
+# Langfuse's settings, shared by its two services (Lesson 8). An `x-` key is ignored by
+# compose, and `&langfuse` names the block so that both services can include it below.
+# The secrets have course defaults so the stack starts with no setup; .env.example says
+# which ones to change before this runs anywhere but your own machine.
+x-langfuse: &langfuse
+  DATABASE_URL: postgresql://${POSTGRES_USER:-docchat}:${POSTGRES_PASSWORD:-docchat}@postgres:5432/langfuse
+  NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3000}
+  SALT: ${LANGFUSE_SALT:-docchat-salt}
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+  TELEMETRY_ENABLED: "false"            # Langfuse phones home by default. Not from here.
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:-redis}
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-miniosecret}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
 
 services:
   postgres:
@@ -70,6 +98,9 @@ services:
       # three settings pointed at Gemini before; the client is the same Lesson 7 client.
       FALLBACK_BASE: http://ollama:11434/v1
       FALLBACK_MODEL: ${OLLAMA_MODEL:-}
+      # Traces go to Langfuse by its service name (Lesson 8). The API does not wait for
+      # it below: a tracer that is down must cost the traces, never the answers.
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
@@ -150,9 +181,129 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # ---- Lesson 8: Langfuse, where every request leaves a trace -----------------------
+  # Six services for one tool, and each one is there for a reason Langfuse's own compose
+  # file gives: the web app and API (langfuse-web), a worker that writes what arrives
+  # (langfuse-worker), ClickHouse for the traces themselves, Redis for the queue between
+  # the two, MinIO as the object store each batch of events lands in first, and Postgres
+  # for users, projects and keys. Postgres is ours: one more database on the same server,
+  # made by a one-shot job the way ollama-pull fetches a model. Only the web app has a
+  # host port. The rest talk on the compose network and nowhere else.
+  langfuse-db:
+    # Creates the `langfuse` database on our Postgres if it is missing, then exits.
+    # Postgres runs its init scripts only on an empty volume, and yours is not empty.
+    image: postgres:16
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-docchat}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-docchat}
+      PGDATABASE: ${POSTGRES_DB:-docchat}
+    entrypoint: ["sh", "-c", "psql -tAc \"SELECT 1 FROM pg_database WHERE datname = 'langfuse'\" | grep -q 1 || createdb langfuse"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  langfuse-worker:
+    # Takes each batch of events off the queue and writes it to ClickHouse. Without it
+    # the API's traces are accepted and never appear.
+    image: langfuse/langfuse-worker:4.50.0
+    environment: *langfuse
+    depends_on: &langfuse-needs
+      langfuse-db:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  langfuse-web:
+    image: langfuse/langfuse:4.50.0
+    environment:
+      <<: *langfuse
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-docchat-nextauth}
+      # The first start creates an organisation, a project with these two keys, and a
+      # user to log in as, so nobody clicks through a sign-up page. The API sends its
+      # traces with the same two keys, read from .env.
+      LANGFUSE_INIT_ORG_ID: docchat
+      LANGFUSE_INIT_ORG_NAME: docchat
+      LANGFUSE_INIT_PROJECT_ID: docchat
+      LANGFUSE_INIT_PROJECT_NAME: docchat
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_USER_EMAIL:-dev@docchat.local}
+      LANGFUSE_INIT_USER_NAME: docchat
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_USER_PASSWORD:-docchat-dev}
+    ports:
+      - "${LANGFUSE_PORT:-3000}:3000"   # the traces, in a browser: http://localhost:3000
+    depends_on:
+      <<: *langfuse-needs
+      langfuse-worker:                  # so `up langfuse-web` also starts the one that writes
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://$$(hostname -i):3000/api/public/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+    volumes:
+      - langfuse_clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4
+    command: ["--requirepass", "${LANGFUSE_REDIS_PASSWORD:-redis}", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - langfuse_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${LANGFUSE_REDIS_PASSWORD:-redis}", "--no-auth-warning", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    # Chainguard's build, as in Langfuse's own compose file: MinIO no longer publishes
+    # images of its own. Chainguard's free tier offers only `latest`, so this is pinned
+    # by digest, which is the pin a moving tag cannot break.
+    image: cgr.dev/chainguard/minio@sha256:f74600a1a46330cdbda1ef760d17a96bd6e0f4a6f0a2c49792ca3ee7e4c6fa18
+    entrypoint: sh
+    command: ["-c", "mkdir -p /data/langfuse && minio server --address :9000 --console-address :9001 /data"]
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-miniosecret}
+    volumes:
+      - langfuse_minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   pgdata:
   qdrantdata:
   uploads:
   models:
   ollama:
+  langfuse_clickhouse:
+  langfuse_redis:
+  langfuse_minio:

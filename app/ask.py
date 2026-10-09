@@ -16,12 +16,14 @@ calls, so a follow-up asked here is condensed against the stored history:
     $ python -m app.ask --conversation 76 "And how many did it hold the year before?"
 
 `--no-save` still answers through the plain pipeline, with no memory and no cache.
+
+From Lesson 8 a saved turn prints the link to its trace, when tracing is on.
 """
 
 import argparse
 import json
 
-from app import db
+from app import db, tracing
 from app.conversation import answer_turn
 from app.generation import answer_question
 from app.logs import setup_logging
@@ -38,13 +40,14 @@ def main() -> None:
 
     setup_logging()
     db.init_db()
-    conv, query = None, args.question
+    conv, query, trace = None, args.question, None
     if args.no_save:
         a = answer_question(args.question, top_k=args.k)
     else:
         t = answer_turn(args.question, args.conversation, top_k=args.k)
-        a, conv, query = t.answer, t.conversation_id, t.query
+        a, conv, query, trace = t.answer, t.conversation_id, t.query, t.trace_id
         a.usd = t.usd                       # the whole turn, condensing included
+    tracing.flush()                         # the process ends here; send its trace first
 
     if args.json:
         print(json.dumps({**a.to_dict(), "conversation_id": conv}, indent=2))
@@ -59,6 +62,8 @@ def main() -> None:
         print(f"  [{c['marker']}] {c['source']}  (relevance {c['score']:.2f})")
     print(f"\n{a.seconds:.1f}s, ${a.usd:.5f}"
           + (f", saved as conversation {conv}" if conv else ""))
+    if trace:
+        print(f"trace: {tracing.url(trace)}")
 
 
 if __name__ == "__main__":

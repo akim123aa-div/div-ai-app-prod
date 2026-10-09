@@ -72,7 +72,7 @@ def store(parts: dict, a: Answer) -> bool:
         return False
     db.cache_put(make_key(parts), query=parts["query"], corpus=parts["corpus"],
                  prompt_version=parts["prompt_version"], model=parts["model"],
-                 answer={"text": a.text, "citations": a.citations,
+                 answer={"text": a.text, "citations": a.citations, "sources": a.sources,
                          "refused": a.refused, "reason": a.reason},
                  n_tokens=a.n_in + a.n_out, usd=a.usd)
     return True

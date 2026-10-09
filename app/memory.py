@@ -41,8 +41,10 @@ from app import db
 from app.chunking import ENC
 from app.config import settings
 from app.generation import REFUSAL, prompt, strip_markers
+from app import tracing
 from app.llm import Completion, get_client
 from app.logs import get_logger
+from app.tracing import observe
 
 log = get_logger(__name__)
 
@@ -129,6 +131,7 @@ def summarise(summary: str, leaving: list[dict]) -> tuple[str, Completion]:
     return text, c
 
 
+@observe(name="window", capture_output=False)
 def window(conversation_id: int | None) -> Window:
     """Build this turn's window from Postgres, summarising first if it has to."""
     if conversation_id is None:
@@ -159,6 +162,7 @@ def window(conversation_id: int | None) -> Window:
                   "content": f"Summary of the earlier conversation:\n{summary}"}]
                 if summary else [])
     messages += [{"role": m["role"], "content": m["text"]} for m in live]
+    tracing.output(messages, folded=len(msgs) - len(live), summarised=call is not None)
     return Window(messages=messages, summary=summary, summary_tokens=s_tok,
                   recent=len(live), folded=len(msgs) - len(live),
                   tokens=s_tok + sum(m["n"] for m in live),

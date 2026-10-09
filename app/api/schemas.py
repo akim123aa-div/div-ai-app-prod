@@ -63,6 +63,15 @@ class Citation(BaseModel):
     score: float
 
 
+class Source(BaseModel):
+    """One passage the answer was written from, cited or not (Lesson 8)."""
+    chunk_id: str
+    doc: str
+    page: int
+    source: str
+    score: float
+
+
 class Usage(BaseModel):
     model: str | None
     n_in: int
@@ -90,6 +99,10 @@ class ChatResponse(BaseModel):
     query: str = Field(description="the standalone query the retriever saw")
     cached: bool = Field(description="served from the response cache, at no cost")
     window: WindowInfo
+    sources: list[Source] = Field(
+        default=[], description="every passage retrieved for the answer (Lesson 8)")
+    trace_id: str | None = Field(
+        default=None, description="this turn's trace in Langfuse, if tracing is on (Lesson 8)")
 
 
 # ---- the streaming vocabulary: one model per SSE event name ------------------
@@ -108,13 +121,15 @@ class CitationsEvent(BaseModel):
 class DoneEvent(BaseModel):
     """event: done. The turn is saved; the stream ends after this.
 
-    Lesson 4 added the last three fields. A client written against Lesson 3
-    ignores them, which is how a vocabulary grows without breaking anyone."""
+    Lesson 4 added `query`, `cached` and `window`, and Lesson 8 `trace_id`. A client
+    written against Lesson 3 ignores them, which is how a vocabulary grows without
+    breaking anyone."""
     conversation_id: int
     seconds: float
     query: str = ""
     cached: bool = False
     window: WindowInfo | None = None
+    trace_id: str | None = None
 
 
 class ErrorEvent(BaseModel):
@@ -172,6 +187,8 @@ class Health(BaseModel):
     prompt_version: str
     corpus: str = Field(description="fingerprint of what the retriever can find")
     guard_context: bool
+    rerank: bool = Field(description="the cross-encoder and its refusal gate are on (Lesson 8)")
+    tracing: str | None = Field(description="where traces go, or nothing (Lesson 8)")
     documents: dict[str, int] = Field(description="document count by status")
     chunks: int = Field(description="chunks the retriever is searching right now")
     points: int = Field(description="vectors in Qdrant")

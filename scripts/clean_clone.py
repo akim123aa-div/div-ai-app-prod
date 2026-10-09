@@ -25,6 +25,10 @@ it, about 2.5 GB. The test sets OLLAMA_MODEL to nothing, so the ollama service
 starts and pulls nothing, and the API runs without a fallback. What it tests is
 that the stack starts; the fallback has its own section in the Lesson 7 notebook.
 
+From Lesson 8 the stack also starts Langfuse, six services more, on a port of its
+own. Nothing checks a trace here: the API does not wait for Langfuse, and a stack
+whose traces are lost still answers. Lesson 8's notebook reads the traces.
+
 The images build from the build cache your own `docker compose build` left, so a
 clone of the same code builds in seconds. Delete that cache and it takes minutes,
 which is the honest first-time number. The models are downloaded into the new
@@ -97,7 +101,8 @@ def main() -> int:
     # Shell variables win over .env when compose fills in ${...}, so these move the
     # host ports without touching the copied file.
     ports = {k: str(free_port()) for k in
-             ("POSTGRES_PORT", "QDRANT_PORT", "QDRANT_GRPC_PORT", "API_PORT", "UI_PORT", "OLLAMA_PORT")}
+             ("POSTGRES_PORT", "QDRANT_PORT", "QDRANT_GRPC_PORT", "API_PORT", "UI_PORT", "OLLAMA_PORT",
+              "LANGFUSE_PORT")}
     env = {**os.environ, **ports, "OLLAMA_MODEL": ""}     # no 2.5 GB download, no fallback
     compose = ["docker", "compose", "-p", PROJECT]
     ok = False

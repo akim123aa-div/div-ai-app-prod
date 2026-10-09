@@ -83,7 +83,7 @@ def chat(req: Annotated[ChatRequest, Depends(checked)],
     return ChatResponse(conversation_id=t.conversation_id, answer=a.text, refused=a.refused,
                         reason=a.reason, citations=a.citations, usage=usage(t),
                         seconds=round(a.seconds, 2), query=t.query, cached=t.cached,
-                        window=t.window.info())
+                        window=t.window.info(), sources=a.sources, trace_id=t.trace_id)
 
 
 @router.post("/stream", response_class=EventSourceResponse)
@@ -106,4 +106,4 @@ def chat_stream(req: Annotated[ChatRequest, Depends(checked)],
         return
     yield ServerSentEvent(event="done", data=DoneEvent(
         conversation_id=t.conversation_id, seconds=round(a.seconds, 2), query=t.query,
-        cached=t.cached, window=t.window.info()))
+        cached=t.cached, window=t.window.info(), trace_id=t.trace_id))
